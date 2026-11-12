@@ -5,6 +5,17 @@ interface Env {
   CALLBACK_URL: string
 }
 
+function logGitHubFailure(category: string, response?: Response, errorCode?: string) {
+  console.error('GitHub authentication upstream failure', {
+    category,
+    ...(response ? {
+      status: response.status,
+      requestId: response.headers.get('x-github-request-id') ?? undefined,
+    } : {}),
+    ...(errorCode ? { errorCode } : {}),
+  })
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const origin = request.headers.get('Origin')
@@ -61,26 +72,55 @@ export default {
       parameters.set('device_code', input.device_code)
       parameters.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
     } else endpoint = 'device/code'
+    let response: Response
     try {
-      const response = await fetch(`https://github.com/login/${endpoint}`, {
+      response = await fetch(`https://github.com/login/${endpoint}`, {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
         body: parameters,
         redirect: 'error',
       })
-      if (!response.ok) return error(502)
-      const result = await response.json() as Record<string, unknown>
-      if (path === '/device-code') {
-        if (typeof result.device_code !== 'string' || typeof result.user_code !== 'string' ||
-          result.verification_uri !== 'https://github.com/login/device' || typeof result.expires_in !== 'number' ||
-          typeof result.interval !== 'number' || result.expires_in <= 0 || result.interval <= 0) return error(502)
-        return new Response(JSON.stringify({ device_code: result.device_code, user_code: result.user_code, verification_uri: result.verification_uri, expires_in: result.expires_in, interval: result.interval }), { headers })
+    } catch {
+      logGitHubFailure('fetch_failed')
+      return error(502)
+    }
+    if (!response.ok) {
+      logGitHubFailure('non_2xx_response', response)
+      return error(502)
+    }
+    let parsed: unknown
+    try { parsed = await response.json() } catch {
+      logGitHubFailure('invalid_json', response)
+      return error(502)
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      logGitHubFailure('invalid_response', response)
+      return error(502)
+    }
+    const result = parsed as Record<string, unknown>
+    if (path === '/device-code') {
+      if (typeof result.device_code !== 'string' || typeof result.user_code !== 'string' ||
+        result.verification_uri !== 'https://github.com/login/device' || typeof result.expires_in !== 'number' ||
+        typeof result.interval !== 'number' || result.expires_in <= 0 || result.interval <= 0) {
+        logGitHubFailure('invalid_response', response)
+        return error(502)
       }
-      if (path === '/device-token' && typeof result.error === 'string' && ['authorization_pending', 'slow_down', 'expired_token', 'access_denied'].includes(result.error)) {
+      return new Response(JSON.stringify({ device_code: result.device_code, user_code: result.user_code, verification_uri: result.verification_uri, expires_in: result.expires_in, interval: result.interval }), { headers })
+    }
+    if (typeof result.error === 'string') {
+      if (path !== '/device-token' || !['authorization_pending', 'slow_down', 'expired_token', 'access_denied'].includes(result.error)) {
+        const errorCode = /^[a-z][a-z0-9_]{0,63}$/.test(result.error) ? result.error : 'unrecognized'
+        logGitHubFailure('oauth_error', response, errorCode)
+      }
+      if (path === '/device-token' && ['authorization_pending', 'slow_down', 'expired_token', 'access_denied'].includes(result.error)) {
         return new Response(JSON.stringify({ error: result.error }), { headers })
       }
-      if (typeof result.access_token !== 'string' || !result.access_token) return error(401)
-      return new Response(JSON.stringify({ access_token: result.access_token }), { headers })
-    } catch { return error(502) }
+      return error(401)
+    }
+    if (typeof result.access_token !== 'string' || !result.access_token) {
+      logGitHubFailure('invalid_response', response)
+      return error(401)
+    }
+    return new Response(JSON.stringify({ access_token: result.access_token }), { headers })
   },
 }

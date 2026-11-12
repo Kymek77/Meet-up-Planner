@@ -17,7 +17,7 @@ beforeEach(() => {
   })
   vi.stubGlobal('history', { replaceState: vi.fn() })
 })
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('GitHub web authorization', () => {
   it('creates a PKCE-protected authorization and consumes the matching callback once', async () => {
@@ -99,13 +99,46 @@ describe('authentication worker', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
   it('does not expose GitHub errors and handles CORS preflight', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ error: 'bad_verification_code', error_description: 'sensitive details' })))
     const response = await worker.fetch(request({ code: 'code', verifier }), env)
     expect(response.status).toBe(401)
     expect(await response.text()).not.toContain('sensitive details')
+    expect(log).toHaveBeenCalledWith('GitHub authentication upstream failure', {
+      category: 'oauth_error', status: 200, requestId: undefined, errorCode: 'bad_verification_code',
+    })
+    expect(JSON.stringify(log.mock.calls)).not.toContain('sensitive details')
     const preflight = await worker.fetch(new Request('https://auth.example/exchange', { method: 'OPTIONS', headers: { Origin: origin } }), env)
     expect(preflight.status).toBe(204)
     expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe(origin)
+  })
+  it('logs only safe metadata for upstream HTTP and fetch failures', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const requestId = 'github-request-id'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private response body', {
+      status: 401, headers: { 'x-github-request-id': requestId },
+    })))
+    expect((await worker.fetch(request({ code: 'private-code', verifier }), env)).status).toBe(502)
+    expect(log).toHaveBeenLastCalledWith('GitHub authentication upstream failure', {
+      category: 'non_2xx_response', status: 401, requestId,
+    })
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/private (?:response body|code)/)
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private fetch details')))
+    expect((await worker.fetch(request({ code: 'code', verifier }), env)).status).toBe(502)
+    expect(log).toHaveBeenLastCalledWith('GitHub authentication upstream failure', { category: 'fetch_failed' })
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private fetch details')
+  })
+  it('logs only safe metadata when GitHub returns invalid JSON', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private response body', {
+      status: 200, headers: { 'x-github-request-id': 'github-request-id' },
+    })))
+    expect((await worker.fetch(request({ code: 'code', verifier }), env)).status).toBe(502)
+    expect(log).toHaveBeenCalledWith('GitHub authentication upstream failure', {
+      category: 'invalid_json', status: 200, requestId: 'github-request-id',
+    })
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private response body')
   })
   it('proxies device flow without exposing the client secret', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(json({ device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 }))
