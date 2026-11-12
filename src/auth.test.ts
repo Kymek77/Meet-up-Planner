@@ -88,6 +88,7 @@ describe('authentication worker', () => {
     expect(body.get('client_secret')).toBe(env.GITHUB_CLIENT_SECRET)
     expect(body.get('code_verifier')).toBe(verifier)
     expect(body.get('redirect_uri')).toBe(callback)
+    expect(fetch.mock.calls[0][1].redirect).toBe('manual')
   })
   it('rejects other origins and invalid inputs without contacting GitHub', async () => {
     const fetch = vi.fn()
@@ -128,6 +129,20 @@ describe('authentication worker', () => {
     expect((await worker.fetch(request({ code: 'code', verifier }), env)).status).toBe(502)
     expect(log).toHaveBeenLastCalledWith('GitHub authentication upstream failure', { category: 'fetch_failed' })
     expect(JSON.stringify(log.mock.calls)).not.toContain('private fetch details')
+  })
+  it('rejects GitHub redirects without forwarding credentials', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetch = vi.fn().mockResolvedValue(new Response(null, {
+      status: 307, headers: { Location: 'https://other.example/token' },
+    }))
+    vi.stubGlobal('fetch', fetch)
+    const response = await worker.fetch(request({ code: 'code', verifier }), env)
+    expect(response.status).toBe(502)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0][1].redirect).toBe('manual')
+    expect(log).toHaveBeenCalledWith('GitHub authentication upstream failure', {
+      category: 'non_2xx_response', status: 307, requestId: undefined,
+    })
   })
   it('logs only safe metadata when GitHub returns invalid JSON', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {})
