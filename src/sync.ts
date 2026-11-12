@@ -1,9 +1,9 @@
 import { isPlannerData, type PlannerData } from './model'
 
 const API = 'https://api.github.com'
-const FILE = 'meet-up-planner.json'
 type Repo = { private: boolean; owner: { login: string } }
 type RemoteFile = { sha: string; content: string; encoding: string }
+export interface SyncTarget { owner: string; repo: string; branch: string; path: string }
 
 async function request<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -18,6 +18,11 @@ function repoPath(owner: string, repo: string) {
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) throw new Error('Enter a valid GitHub username and repository name.')
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
 }
+function filePath(target: SyncTarget) {
+  const parts = target.path.split('/')
+  if (!target.branch.trim() || parts.some(p => !p || p === '.' || p === '..')) throw new Error('Enter a valid branch and file path.')
+  return `${repoPath(target.owner, target.repo)}/contents/${parts.map(encodeURIComponent).join('/')}`
+}
 
 export async function verifyRepository(token: string, owner: string, repo: string) {
   const user = await request<{ login: string }>('/user', token)
@@ -27,9 +32,9 @@ export async function verifyRepository(token: string, owner: string, repo: strin
   }
 }
 
-export async function readCloud(token: string, owner: string, repo: string): Promise<{ data: PlannerData; sha: string } | null> {
-  await verifyRepository(token, owner, repo)
-  const path = `${repoPath(owner, repo)}/contents/${FILE}`
+export async function readCloud(token: string, target: SyncTarget): Promise<{ data: PlannerData; sha: string } | null> {
+  await verifyRepository(token, target.owner, target.repo)
+  const path = `${filePath(target)}?ref=${encodeURIComponent(target.branch)}`
   const response = await fetch(`${API}${path}`, { headers: { Accept: 'application/vnd.github+json', Authorization: ['Bearer', token].join(' '), 'X-GitHub-Api-Version': '2022-11-28' } })
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`Could not read the cloud copy (${response.status}).`)
@@ -41,14 +46,14 @@ export async function readCloud(token: string, owner: string, repo: string): Pro
   return { data, sha: file.sha }
 }
 
-export async function writeCloud(token: string, owner: string, repo: string, data: PlannerData, sha?: string) {
-  await verifyRepository(token, owner, repo)
+export async function writeCloud(token: string, target: SyncTarget, data: PlannerData, sha?: string) {
+  await verifyRepository(token, target.owner, target.repo)
   const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2))
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
-  const result = await request<{ content: { sha: string } }>(`${repoPath(owner, repo)}/contents/${FILE}`, token, {
+  const result = await request<{ content: { sha: string } }>(filePath(target), token, {
     method: 'PUT',
-    body: JSON.stringify({ message: 'Update Meet-up Planner', content: btoa(binary), ...(sha ? { sha } : {}) }),
+    body: JSON.stringify({ message: 'Update Meet-up Planner', content: btoa(binary), branch: target.branch, ...(sha ? { sha } : {}) }),
   })
   return result.content.sha
 }

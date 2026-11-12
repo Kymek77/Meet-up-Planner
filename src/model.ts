@@ -42,6 +42,16 @@ export function validRange(start: string, end: string) {
   return isValid(a) && isValid(b) && a < b
 }
 
+export function mergeRanges(ranges: { start: string; end: string }[]) {
+  const merged: { start: string; end: string }[] = []
+  for (const range of ranges.filter(r => validRange(r.start, r.end)).sort((a, b) => a.start.localeCompare(b.start))) {
+    const last = merged[merged.length - 1]
+    if (last && range.start <= last.end) last.end = range.end > last.end ? range.end : last.end
+    else merged.push({ start: range.start, end: range.end })
+  }
+  return merged
+}
+
 export function meetingWarnings(meeting: Meeting, data: PlannerData, bufferMinutes = 30): string[] {
   const warnings: string[] = []
   if (!validRange(meeting.start, meeting.end)) return ['Invalid time range']
@@ -58,16 +68,17 @@ export function meetingWarnings(meeting: Meeting, data: PlannerData, bufferMinut
   if (data.availability.some(a => a.periodId === meeting.periodId && a.friendId === null && a.kind && a.kind !== 'available' && !a.expired && validRange(a.start, a.end) && areIntervalsOverlapping(interval, { start: parseISO(a.start), end: parseISO(a.end) }))) warnings.push('Overlaps a busy or unavailable block')
   for (const [friendId, label] of [[null, 'your availability'], [meeting.friendId, 'friend’s availability']] as const) {
     const blocks = data.availability.filter(a => a.periodId === meeting.periodId && a.friendId === friendId && !a.expired && (!a.kind || a.kind === 'available'))
-    if (blocks.length && !blocks.some(a => a.start <= meeting.start && a.end >= meeting.end)) warnings.push(`Outside ${label}`)
+    if (blocks.length && !mergeRanges(blocks).some(a => a.start <= meeting.start && a.end >= meeting.end)) warnings.push(`Outside ${label}`)
   }
   return warnings
 }
 
 export function freeGaps(blocks: Availability[], meetings: Meeting[]): { start: string; end: string }[] {
   const gaps: { start: string; end: string }[] = []
-  for (const block of blocks.filter(b => b.friendId === null && (!b.kind || b.kind === 'available') && !b.expired && validRange(b.start, b.end))) {
+  const periods = [...new Set(blocks.map(b => b.periodId))]
+  for (const periodId of periods) for (const block of mergeRanges(blocks.filter(b => b.periodId === periodId && b.friendId === null && (!b.kind || b.kind === 'available') && !b.expired))) {
     let remaining = [{ start: block.start, end: block.end }]
-    const occupied = [...meetings.filter(m => m.periodId === block.periodId && m.status !== 'cancelled'), ...blocks.filter(b => b.periodId === block.periodId && b.friendId === null && b.kind && b.kind !== 'available' && !b.expired)]
+    const occupied = [...meetings.filter(m => m.periodId === periodId && m.status !== 'cancelled'), ...blocks.filter(b => b.periodId === periodId && b.friendId === null && b.kind && b.kind !== 'available' && !b.expired)]
     for (const meeting of occupied.filter(m => validRange(m.start, m.end))) {
       remaining = remaining.flatMap(gap => {
         if (meeting.end <= gap.start || meeting.start >= gap.end) return [gap]
