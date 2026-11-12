@@ -1,12 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, readCloud, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, hasPersonalInstallation, readCloud, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('GitHub sync', () => {
+  it('finds the authenticated user’s installation across pages, ignoring unrelated or suspended installations', async () => {
+    const other = { account: { login: 'other', type: 'User' }, app_slug: 'planner', suspended_at: null }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(ok({ installations: Array.from({ length: 100 }, () => other) }))
+      .mockResolvedValueOnce(ok({ installations: [
+        { account: { login: 'ME', type: 'Organization' }, app_slug: 'planner', suspended_at: null },
+        { account: { login: 'me', type: 'User' }, app_slug: 'planner', suspended_at: '2026-01-01' },
+        { account: { login: 'Me', type: 'User' }, app_slug: 'planner', suspended_at: null },
+      ] }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(hasPersonalInstallation('example', 'me', 'planner')).resolves.toBe(true)
+    expect(fetch.mock.calls[1][0]).toContain('page=2')
+  })
+  it('reports absent installations and does not treat errors as missing installations', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(ok({ installations: [] })).mockResolvedValueOnce(new Response('', { status: 401 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(hasPersonalInstallation('example', 'me', 'planner')).resolves.toBe(false)
+    await expect(hasPersonalInstallation('example', 'me', 'planner')).rejects.toThrow('expired or was revoked')
+  })
   it('serializes Unicode data and includes the last known SHA', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ content: { sha: 'new' } }))
     vi.stubGlobal('fetch', fetch)

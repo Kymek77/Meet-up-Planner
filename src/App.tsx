@@ -3,7 +3,7 @@ import { addHours, format, parseISO } from 'date-fns'
 import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
 import { usePlanner } from './store'
-import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, readCloud, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, hasPersonalInstallation, readCloud, writeCloud } from './sync'
 import { beginGitHubAuthorization, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback, type DeviceAuthorization } from './auth'
 import Calendar from './Calendar'
 import './sync.css'
@@ -216,6 +216,8 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const [deviceAuthorization, setDeviceAuthorization] = useState<DeviceAuthorization | null>(null)
   const [authenticating, setAuthenticating] = useState(false)
   const authController = useRef<AbortController | null>(null)
+  const pendingToken = useRef('')
+  const [needsInstallation, setNeedsInstallation] = useState(false)
   const callbackHandled = useRef(false)
   const [owner, setOwner] = useState(localStorage.getItem('meetup-owner') ?? '')
   const [repo, setRepo] = useState(localStorage.getItem('meetup-repo') ?? 'meet-up-planner-data')
@@ -230,7 +232,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const target = useCallback(() => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() }), [owner, repo, branch, path])
   const shaKey = useCallback((remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`, [target])
   const signIn = async () => {
-    if (!clientId || !workerUrl) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
+    if (!clientId || !workerUrl || !appSlug) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
     setBusy(true); setAuthenticating(true); setMessage('')
     try {
       const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
@@ -248,6 +250,15 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       const accessToken = await getAccessToken(controller.signal)
       const user = await getAuthenticatedUser(accessToken, controller.signal)
       if (controller.signal.aborted) return
+      if (!await hasPersonalInstallation(accessToken, user.login, appSlug, controller.signal)) {
+        if (controller.signal.aborted) return
+        pendingToken.current = accessToken
+        setNeedsInstallation(true)
+        setMessage('Install the GitHub App on your personal account, then return here to continue.')
+        return
+      }
+      pendingToken.current = ''
+      setNeedsInstallation(false)
       const repositoryName = repo.trim() || 'meet-up-planner-data'
       const repository = await ensurePrivateRepository(accessToken, user.login, repositoryName)
       if (controller.signal.aborted) return
@@ -303,7 +314,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       if (authController.current === controller) authController.current = null
       setBusy(false); setAuthenticating(false); setDeviceAuthorization(null)
     }
-  }, [repo, path, shaKey, data, save, onSyncStatus])
+  }, [appSlug, repo, path, shaKey, data, save, onSyncStatus])
   const signInWithDevice = () => {
     void completeSignIn(async signal => {
       const authorization = await requestDeviceAuthorization(workerUrl, signal)
@@ -314,6 +325,8 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const signOut = () => {
     authController.current?.abort()
     authController.current = null
+    pendingToken.current = ''
+    setNeedsInstallation(false)
     setToken(''); setConflict(null); setDeviceAuthorization(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
     onSyncStatus('GitHub sync is paused. Your planner remains saved on this device.')
   }
@@ -490,12 +503,12 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     return () => window.clearTimeout(timer)
   }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
   return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
-    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Install the GitHub App, then sign in to connect a private data repository. Choose all repositories to allow automatic creation, or create a private repository first and select only that repository. The access token stays in memory and is cleared when you reload or sign out.</p>
+    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Sign in with GitHub to connect your private planner repository. If needed, we’ll guide you through installing the GitHub App and creating the repository. Your access token stays in memory and is cleared when you reload or sign out.</p>
       <div className="form">
-        {(!clientId || !workerUrl) && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must configure the GitHub App and authentication service.</p>}
-        {appSlug ? <a className="button secondary" href={`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`} target="_blank" rel="noreferrer">Install GitHub App</a> : <p className="form-hint">Before connecting, install the GitHub App from its GitHub page and grant it access to the private planner repository.</p>}
-        {!token ? <div className="sync-actions"><button className="button" disabled={busy || !clientId || !workerUrl} onClick={() => void signIn()}>{authenticating ? 'Connecting to GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
-        {!token && !authenticating && <button className="button secondary" disabled={busy || !workerUrl} onClick={signInWithDevice}>Use device code instead</button>}
+        {(!clientId || !workerUrl || !appSlug) && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must configure the GitHub App and authentication service.</p>}
+        {!token && !needsInstallation ? <div className="sync-actions"><button className="button" disabled={busy || !clientId || !workerUrl || !appSlug} onClick={() => void signIn()}>{authenticating ? 'Connecting to GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : token && <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
+        {needsInstallation && <div className="sync-actions"><p>GitHub requires you to approve the app installation. Choose <strong>All repositories</strong> to allow automatic setup; this also grants access to your other repositories. With <strong>Only select repositories</strong>, GitHub may require an existing repository selection. The app can create its own private repository if the required permission is granted.</p><a className="button" href={`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`} target="_blank" rel="noreferrer">Install GitHub App</a><button className="button secondary" disabled={busy} onClick={() => { const accessToken = pendingToken.current; if (accessToken) void completeSignIn(async () => accessToken) }}>Continue after installation</button><button className="button secondary" onClick={signOut}>Cancel</button></div>}
+        {!token && !authenticating && !needsInstallation && <button className="button secondary" disabled={busy || !workerUrl || !appSlug} onClick={signInWithDevice}>Use device code instead</button>}
         {deviceAuthorization && <div className="device-code" role="status"><p>Open <a href={deviceAuthorization.verification_uri} target="_blank" rel="noreferrer">GitHub device activation</a>, enter this code, then return to this app:</p><strong>{deviceAuthorization.user_code}</strong><p>Keep this app open while authorizing. The code expires in about {Math.ceil(deviceAuthorization.expires_in / 60)} minutes.</p></div>}
         <label>Private data repository<input value={repo} disabled={Boolean(token)} onChange={e => { setRepo(e.target.value); localStorage.setItem('meetup-repo', e.target.value) }} placeholder="meet-up-planner-data" /></label>
         <details className="advanced-sync"><summary>Advanced repository settings</summary><div className="form"><label>Branch<input value={branch} disabled={Boolean(token)} onChange={e => { setBranch(e.target.value); localStorage.setItem('meetup-branch', e.target.value) }} /></label><label>Planner file path<input value={path} disabled={Boolean(token)} onChange={e => { setPath(e.target.value); localStorage.setItem('meetup-path', e.target.value) }} /></label></div></details>

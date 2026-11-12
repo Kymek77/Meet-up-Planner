@@ -42,6 +42,19 @@ export async function getAuthenticatedUser(token: string, signal?: AbortSignal) 
   return request<{ login: string }>('/user', token, { signal })
 }
 
+export async function hasPersonalInstallation(token: string, owner: string, appSlug: string, signal?: AbortSignal) {
+  for (let page = 1; ; page++) {
+    const result = await request<{ installations: { account: { login: string; type: string }; app_slug: string; suspended_at: string | null }[] }>(
+      `/user/installations?per_page=100&page=${page}`, token, { signal },
+    )
+    if (!Array.isArray(result.installations)) throw new Error('Could not verify the GitHub App installation.')
+    if (result.installations.some(installation => installation.account?.type === 'User' &&
+      installation.account.login.toLowerCase() === owner.toLowerCase() &&
+      installation.app_slug === appSlug && !installation.suspended_at)) return true
+    if (result.installations.length < 100) return false
+  }
+}
+
 function repoPath(owner: string, repo: string) {
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) throw new Error('Enter a valid GitHub username and repository name.')
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
