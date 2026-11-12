@@ -1,31 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, readCloud, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('GitHub sync', () => {
-  it('requests a device code for the configured GitHub App without OAuth scopes', async () => {
-    const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 }
-    const fetch = vi.fn().mockResolvedValueOnce(ok(authorization))
-    vi.stubGlobal('fetch', fetch)
-    expect(await requestDeviceAuthorization('client-id')).toEqual(authorization)
-    expect(fetch.mock.calls[0][0]).toBe('https://github.com/login/device/code')
-    expect(fetch.mock.calls[0][1].body.toString()).toContain('client_id=client-id')
-    expect(fetch.mock.calls[0][1].body.toString()).not.toContain('scope=')
-  })
-  it('polls through authorization pending until GitHub returns an access token', async () => {
-    vi.useFakeTimers()
-    const fetch = vi.fn().mockResolvedValueOnce(ok({ error: 'authorization_pending' })).mockResolvedValueOnce(ok({ access_token: 'oauth-token' }))
-    vi.stubGlobal('fetch', fetch)
-    const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }
-    const result = pollDeviceAuthorization('client-id', authorization, new AbortController().signal)
-    await vi.advanceTimersByTimeAsync(1000)
-    await vi.advanceTimersByTimeAsync(1000)
-    await expect(result).resolves.toBe('oauth-token')
-  })
   it('serializes Unicode data and includes the last known SHA', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ content: { sha: 'new' } }))
     vi.stubGlobal('fetch', fetch)

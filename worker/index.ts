@@ -20,13 +20,29 @@ export default {
     headers.set('Content-Type', 'application/json')
     const error = (status: number) => new Response(JSON.stringify({ error: 'GitHub authorization could not be completed.' }), { status, headers })
     if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET || !env.CALLBACK_URL) return error(503)
+    try {
+      const callback = new URL(env.CALLBACK_URL)
+      if (callback.origin !== env.PLANNER_ORIGIN || callback.search || callback.hash ||
+        (callback.protocol !== 'https:' && !(callback.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(callback.hostname)))) return error(503)
+    } catch { return error(503) }
     if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) return error(415)
     if (Number(request.headers.get('Content-Length') ?? 0) > 4096) return error(413)
     let input: unknown
     try {
-      const body = await request.text()
-      if (body.length > 4096) return error(413)
-      input = JSON.parse(body)
+      if (!request.body) return error(400)
+      const reader = request.body.getReader(), chunks: Uint8Array[] = []
+      let size = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.byteLength
+        if (size > 4096) { await reader.cancel(); return error(413) }
+        chunks.push(value)
+      }
+      const bytes = new Uint8Array(size)
+      let offset = 0
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+      input = JSON.parse(new TextDecoder().decode(bytes))
     } catch { return error(400) }
     if (!input || typeof input !== 'object' || !('code' in input) || !('verifier' in input) ||
       typeof input.code !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(input.code) ||

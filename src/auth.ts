@@ -39,7 +39,13 @@ export async function exchangeGitHubCode(workerUrl: string, code: string, verifi
   try { url = new URL(workerUrl) } catch { throw new Error('GitHub authentication service is not configured for this deployment.') }
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('GitHub authentication service must use HTTPS.')
   url.pathname = '/exchange'; url.search = ''; url.hash = ''
-  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, verifier }), signal })
+  let response: Response
+  try {
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, verifier }), signal })
+  } catch (e) {
+    if (signal?.aborted) throw e
+    throw new Error('Could not reach the GitHub authentication service. Check your connection and try again.')
+  }
   if (!response.ok) throw new Error('GitHub sign-in could not be completed. Check the authentication service configuration and try again.')
   const result = await response.json() as { access_token?: unknown }
   if (typeof result.access_token !== 'string' || !result.access_token) throw new Error('GitHub did not return a valid access token.')

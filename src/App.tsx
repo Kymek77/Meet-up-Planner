@@ -226,6 +226,8 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const syncedData = useRef('')
   const syncing = useRef(false)
   const retryDelay = useRef(5000)
+  const target = useCallback(() => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() }), [owner, repo, branch, path])
+  const shaKey = useCallback((remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`, [target])
   const signIn = async () => {
     if (!clientId || !workerUrl) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
     setBusy(true); setAuthenticating(true); setMessage('')
@@ -237,7 +239,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       setBusy(false); setAuthenticating(false)
     }
   }
-  const completeSignIn = async (code: string, verifier: string) => {
+  const completeSignIn = useCallback(async (code: string, verifier: string) => {
     const controller = new AbortController()
     authController.current = controller
     setBusy(true); setAuthenticating(true); setMessage(''); setConflict(null)
@@ -247,9 +249,11 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       if (controller.signal.aborted) return
       const repositoryName = repo.trim() || 'meet-up-planner-data'
       const repository = await ensurePrivateRepository(accessToken, user.login, repositoryName)
+      if (controller.signal.aborted) return
       const syncTarget = { owner: user.login, repo: repositoryName, branch: repository.branch, path: path.trim() || 'data/meetup-planner.json' }
       const key = shaKey(syncTarget)
       const remote = await readCloud(accessToken, syncTarget)
+      if (controller.signal.aborted) return
       let foundConflict = false
       if (!remote) {
         const sha = await writeCloud(accessToken, syncTarget, data)
@@ -282,6 +286,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
           setMessage('Signed in and your planner is up to date.')
         }
       }
+      if (controller.signal.aborted) return
       setToken(accessToken)
       setOwner(user.login)
       setRepo(repositoryName)
@@ -297,23 +302,21 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       if (authController.current === controller) authController.current = null
       setBusy(false); setAuthenticating(false)
     }
-  }
+  }, [workerUrl, repo, path, shaKey, data, save, onSyncStatus])
   const signOut = () => {
     authController.current?.abort()
     authController.current = null
     setToken(''); setConflict(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
     onSyncStatus('GitHub sync is paused. Your planner remains saved on this device.')
   }
-  const target = useCallback(() => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() }), [owner, repo, branch, path])
-  const shaKey = useCallback((remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`, [target])
   useEffect(() => {
     if (callbackHandled.current) return
     callbackHandled.current = true
     try {
       const callback = takeGitHubCallback(new URL(window.location.href))
-      if (callback) void completeSignIn(callback.code, callback.verifier)
-    } catch (e) { setMessage(e instanceof Error ? e.message : 'GitHub sign-in failed.') }
-  })
+      if (callback) queueMicrotask(() => void completeSignIn(callback.code, callback.verifier))
+    } catch (e) { queueMicrotask(() => setMessage(e instanceof Error ? e.message : 'GitHub sign-in failed.')) }
+  }, [completeSignIn])
   const rememberTarget = useCallback(() => {
     localStorage.setItem('meetup-owner', owner.trim()); localStorage.setItem('meetup-repo', repo.trim()); localStorage.setItem('meetup-branch', branch.trim()); localStorage.setItem('meetup-path', path.trim())
   }, [owner, repo, branch, path])
