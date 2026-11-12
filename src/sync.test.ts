@@ -1,30 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, hasPersonalInstallation, readCloud, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('GitHub sync', () => {
-  it('requests a device code for the configured GitHub App without OAuth scopes', async () => {
-    const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 }
-    const fetch = vi.fn().mockResolvedValueOnce(ok(authorization))
+  it('finds the authenticated user’s installation across pages, ignoring unrelated or suspended installations', async () => {
+    const other = { account: { login: 'other', type: 'User' }, app_slug: 'planner', suspended_at: null }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(ok({ installations: Array.from({ length: 100 }, () => other) }))
+      .mockResolvedValueOnce(ok({ installations: [
+        { account: { login: 'ME', type: 'Organization' }, app_slug: 'planner', suspended_at: null },
+        { account: { login: 'me', type: 'User' }, app_slug: 'planner', suspended_at: '2026-01-01' },
+        { account: { login: 'Me', type: 'User' }, app_slug: 'planner', suspended_at: null },
+      ] }))
     vi.stubGlobal('fetch', fetch)
-    expect(await requestDeviceAuthorization('client-id')).toEqual(authorization)
-    expect(fetch.mock.calls[0][0]).toBe('https://github.com/login/device/code')
-    expect(fetch.mock.calls[0][1].body.toString()).toContain('client_id=client-id')
-    expect(fetch.mock.calls[0][1].body.toString()).not.toContain('scope=')
+    await expect(hasPersonalInstallation('example', 'me', 'planner')).resolves.toBe(true)
+    expect(fetch.mock.calls[1][0]).toContain('page=2')
   })
-  it('polls through authorization pending until GitHub returns an access token', async () => {
-    vi.useFakeTimers()
-    const fetch = vi.fn().mockResolvedValueOnce(ok({ error: 'authorization_pending' })).mockResolvedValueOnce(ok({ access_token: 'oauth-token' }))
+  it('reports absent installations and does not treat errors as missing installations', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(ok({ installations: [] })).mockResolvedValueOnce(new Response('', { status: 401 }))
     vi.stubGlobal('fetch', fetch)
-    const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 1 }
-    const result = pollDeviceAuthorization('client-id', authorization, new AbortController().signal)
-    await vi.advanceTimersByTimeAsync(1000)
-    await vi.advanceTimersByTimeAsync(1000)
-    await expect(result).resolves.toBe('oauth-token')
+    await expect(hasPersonalInstallation('example', 'me', 'planner')).resolves.toBe(false)
+    await expect(hasPersonalInstallation('example', 'me', 'planner')).rejects.toThrow('expired or was revoked')
   })
   it('serializes Unicode data and includes the last known SHA', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ content: { sha: 'new' } }))
@@ -81,6 +81,14 @@ describe('GitHub sync', () => {
 
     await expect(ensurePrivateRepository('example', 'me', 'planner-data')).resolves.toEqual({ branch: 'main', created: false })
     await expect(ensurePrivateRepository('example', 'me', 'public-data')).rejects.toThrow('must be private')
+  })
+  it('explains inaccessible existing repositories without attempting a write', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(new Response('', { status: 422 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(ensurePrivateRepository('example', 'me', 'planner-data')).rejects.toThrow('If it already exists, grant the GitHub App access')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
   it('identifies a stale cloud version as a resolvable conflict', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(new Response('', { status: 409 }))

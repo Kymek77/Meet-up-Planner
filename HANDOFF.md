@@ -2,7 +2,7 @@
 
 ## How to use this handoff
 
-Treat the product requirements below as the continuing baseline for all future work on Meet-up Planner. Preserve existing behavior while implementing them, and do not narrow the product to the most recent GitHub sync change. The GitHub authentication subsection is intentionally updated from the original OAuth Device Flow proposal to the GitHub App Device Flow now implemented in this repository.
+Treat the product requirements below as the continuing baseline for all future work on Meet-up Planner. Preserve existing behavior while implementing them, and do not narrow the product to the most recent GitHub sync change. GitHub sign-in uses a GitHub App and a Cloudflare Worker for the web authorization token exchange.
 
 ## Product purpose
 
@@ -12,7 +12,7 @@ The experience should feel like a polished, calm, personal planner—not a busin
 
 ## Non-goals
 
-Do not build group availability polls, friend-facing booking pages, shared editing or multi-user collaboration, messaging integrations, calendar OAuth, or a backend server/database service.
+Do not build group availability polls, friend-facing booking pages, shared editing or multi-user collaboration, messaging integrations, calendar OAuth, or a backend planner-data server/database. The Cloudflare Worker is limited to GitHub authentication.
 
 ## Product workflow
 
@@ -114,23 +114,23 @@ Show the current planning period, friend count, confirmed count, tentative/await
 
 ## GitHub App authentication and private sync
 
-Use the GitHub App created for this planner, not the previously proposed OAuth App flow. The current static GitHub Pages app uses GitHub App Device Flow:
+Use the GitHub App created for this planner. GitHub Pages uses GitHub App web authorization with PKCE and a Cloudflare Worker for the token exchange:
 
-1. The user installs the app and grants it access, then starts **Connect GitHub** in planner Settings.
-2. The app requests a device code with the public GitHub App client ID (without OAuth scopes), displays the one-time code and verification URL, and polls at GitHub's supplied interval.
+1. The user starts **Connect GitHub** in planner Settings, authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
+2. If the app is not installed on their personal account, the planner offers GitHub's installation page; the user returns to the planner and selects **Continue after installation**.
 3. The user token remains in memory only; it is cleared on reload/sign-out and the user reconnects in each browser session. Never put an app client secret or private key in frontend code or build variables.
-4. Request **Contents: Read and write**. Request **Repository creation: Read and write** only if the app should create the private data repository. Disable webhooks; Device Flow does not use a callback URL. The app homepage should be the deployed planner URL.
+4. Request **Contents: Read and write** and **Repository creation: Read and write** for automatic creation. Enable Device Flow, disable webhooks and configure the deployed planner URL as the homepage and exact callback URL. The site owner can deploy and configure the Worker through the Cloudflare browser dashboard as described in README.
 5. On successful sign-in, create or connect a private `meet-up-planner-data` repository and initialize `data/meetup-planner.json`. If creation is not permitted, instruct the user to create a private repository manually and grant the app access.
 6. Repository settings are owner, private repository name, branch (default `main`), and file path (default `data/meetup-planner.json`). Keep settings and the most recently synced blob SHA locally.
 7. Use GitHub Contents API reads and writes. Include the current blob SHA on updates; detect 409/conflict conditions and never silently overwrite. Before replacing a version, download a dated backup and let the user choose local or cloud data. Automatic record merging is not required.
 8. Save locally first, debounce automatic sync (approximately 2–5 seconds), provide manual **Sync now**, show clear saved/syncing/synced/offline/failure status, and retain local data for retries during outages.
 9. Handle missing repositories, incorrect branches/paths, expired/revoked tokens, and insufficient permissions with actionable messages.
 
-For GitHub Pages, repository Actions Variables must be named `MEETUP_APP_CLIENT_ID` and `MEETUP_APP_SLUG` (custom names cannot start with reserved `GITHUB_`). `.github/workflows/pages.yml` maps these public values to `VITE_GITHUB_APP_CLIENT_ID` and `VITE_GITHUB_APP_SLUG` during the Vite build. Local development may use those Vite names in ignored `.env.local`.
+For GitHub Pages, repository Actions Variables `MEETUP_APP_CLIENT_ID`, `MEETUP_APP_SLUG`, and `MEETUP_AUTH_URL` map to public Vite build variables. Set the client secret only in the Worker secret store. See README for deployment and callback configuration.
 
 ## GitHub Pages and documentation
 
-Configure Vite with the correct project-site base path, no routing that breaks Pages (use hash routing if client-side routing is needed), and a Pages workflow that installs dependencies, type-checks/builds, runs tests, and deploys. The repository README should explain creating/configuring the private data repository, GitHub App Device Flow, deployment, stored data/privacy, and backup export/import.
+Configure Vite with the correct project-site base path, no routing that breaks Pages (use hash routing if client-side routing is needed), and a Pages workflow that installs dependencies, type-checks/builds, runs tests, and deploys. The repository README should explain creating/configuring the private data repository, GitHub App sign-in, deployment, stored data/privacy, and backup export/import.
 
 ## Test baseline
 
@@ -145,7 +145,7 @@ Write and maintain tests for meet-up creation/update, conflict detection, travel
 5. Week calendar.
 6. People view and dashboard.
 7. Itinerary.
-8. GitHub App Device Flow authentication.
+8. GitHub App authentication.
 9. GitHub JSON sync, conflict handling, and status.
 10. Export/import, settings, tests, README, and Pages deployment.
 
@@ -157,7 +157,7 @@ Write and maintain tests for meet-up creation/update, conflict detection, travel
 - [ ] See unbooked friends and scheduling/travel-buffer conflicts.
 - [ ] View and copy a chronological confirmed itinerary.
 - [ ] Use the app offline with persistent local data.
-- [ ] Sign in with the GitHub App Device Flow and sync a JSON file to a private repository.
+- [ ] Sign in with the GitHub App and sync a JSON file to a private repository.
 - [ ] Access the same planner from another device after reconnecting.
 - [ ] Export/import a complete validated JSON backup.
 - [ ] Install the app as a phone PWA and deploy it to GitHub Pages.
@@ -166,11 +166,20 @@ Treat this checklist as a product-level audit, not a claim that each item has al
 
 ## Current branch / PR handoff
 
-This work is on `copilot/continue-development-hand-off-audit`; PR #3 is the existing review target. The latest changes include GitHub App Device Flow, private repository creation/fallback guidance, local-first debounced sync, offline retries, conflict handling/backups, and Pages Actions variables. The Actions variables needed for deployment are `MEETUP_APP_CLIENT_ID` and `MEETUP_APP_SLUG`.
+The current branch is `copilot/fix-github-sign-in-user-flow`. It adds the authentication Worker and browser-only deployment guidance, GitHub web authorization with PKCE and a device-code fallback, personal-installation detection, and an attempt to automatically create a private data repository. Existing local-first sync, validation, conflict handling and backups remain in place. The owner intends to merge the branch; no merge is performed by this handoff.
 
-Before merging, confirm the GitHub App is configured as described above, both repository Actions Variables exist, Pages uses **GitHub Actions**, and PR checks pass. Merging to `main` triggers the Pages deployment. After deployment, test installation/sign-in, creation or manual connection of a private data repository, creation of the planner JSON, a refresh/reconnect, local persistence, and resumed sync.
+Cloudflare's first build failed with **root directory not found** because the `worker` folder is on this branch but was not yet on `main`. After merging, verify `worker/index.ts` and `worker/wrangler.toml` exist on `main`, then retry the Cloudflare build using `main` and root directory `worker`. In Cloudflare Workers Builds use Worker name `meet-up-planner-auth`, a blank build command, deploy command `npx wrangler deploy`, preview builds off, and Cloudflare Access off. The Worker does not become operational until its runtime variables and secret are configured.
 
-Most recently reported validation for the implementation: lint passed, all 16 tests passed, and the production build passed. Secret scanning found no secrets, and CodeQL reported no alerts for the implementation. These results predate this documentation update; document-only edits do not change app behavior.
+### Remaining deployment steps
+
+1. Confirm the GitHub App is public if other accounts will use it, with the exact deployed planner URL as homepage and callback, Device Flow enabled, webhooks disabled, and **Contents: read and write** plus **Repository creation: read and write** permissions. Approve changed permissions on existing installations.
+2. In the deployed Worker's Cloudflare **Settings → Variables and Secrets**, add text runtime variables `GITHUB_CLIENT_ID`, `PLANNER_ORIGIN` (origin only, no trailing slash) and `CALLBACK_URL` (the exact planner callback URL including trailing slash). Add the GitHub App client secret as a **Secret** named `GITHUB_CLIENT_SECRET` and deploy the configuration. Never put the secret in Git, frontend configuration or logs.
+3. In repository **Settings → Secrets and variables → Actions → Variables**, set the public variables `MEETUP_APP_CLIENT_ID`, `MEETUP_APP_SLUG` and `MEETUP_AUTH_URL` (the Worker URL). Ensure Pages uses **GitHub Actions**, then run the Pages deployment workflow after these variables are set. Merging triggers a deployment but does not automatically configure the Worker or these variables.
+4. Test the live flow: authorize GitHub, install the app if prompted, return and continue, automatically create a private repository and initialize the JSON file, reconnect to an existing installation/repository, and exercise the device-code fallback. Test conflicts and offline/reconnect behavior without losing local data. The live Worker, GitHub installation, repository creation and browser/PWA flows have **not** been verified end to end.
+
+The GitHub installation page may require selecting an existing repository when choosing selected repositories. All-repository access is broader; GitHub controls this choice. Repository creation also depends on GitHub permissions, and a 404 can mean an existing repository is inaccessible. The Worker handles sign-in only; sync calls GitHub directly. The Worker Free plan has request limits, including device-flow polling, and its origin check alone does not prevent abuse.
+
+Most recent code validation before this documentation update: lint, 25 tests and production build passed; secret scanning found no secrets and CodeQL reported no alerts. Run current checks again before release.
 
 ## Known GitHub sync behavior
 

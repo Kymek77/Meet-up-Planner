@@ -1,17 +1,9 @@
 import { isPlannerData, type PlannerData } from './model'
 
 const API = 'https://api.github.com'
-const OAUTH = 'https://github.com/login'
 type Repo = { private: boolean; owner: { login: string }; default_branch: string }
 type RemoteFile = { sha: string; content: string; encoding: string }
 export interface SyncTarget { owner: string; repo: string; branch: string; path: string }
-export interface DeviceAuthorization {
-  device_code: string
-  user_code: string
-  verification_uri: string
-  expires_in: number
-  interval: number
-}
 
 export class CloudConflictError extends Error {
   constructor() {
@@ -34,55 +26,6 @@ export class GitHubPermissionError extends Error {
   }
 }
 
-async function oauthRequest<T>(path: string, body: URLSearchParams, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${OAUTH}${path}`, {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-    signal,
-  })
-  if (!response.ok) throw new Error(`GitHub authorization failed (${response.status}).`)
-  return response.json() as Promise<T>
-}
-
-export async function requestDeviceAuthorization(clientId: string, signal?: AbortSignal): Promise<DeviceAuthorization> {
-  if (!clientId.trim()) throw new Error('GitHub App client ID is not configured.')
-  const result = await oauthRequest<DeviceAuthorization & { error?: string; error_description?: string }>('/device/code', new URLSearchParams({ client_id: clientId.trim() }), signal)
-  if (result.error || !result.device_code || !result.user_code || !result.verification_uri || !result.expires_in) {
-    throw new Error(result.error_description ?? 'GitHub did not return a valid device authorization code.')
-  }
-  return result
-}
-
-function wait(ms: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) { reject(new DOMException('Authorization cancelled.', 'AbortError')); return }
-    const timer = globalThis.setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, ms)
-    const abort = () => { globalThis.clearTimeout(timer); reject(new DOMException('Authorization cancelled.', 'AbortError')) }
-    signal.addEventListener('abort', abort, { once: true })
-  })
-}
-
-export async function pollDeviceAuthorization(clientId: string, authorization: DeviceAuthorization, signal: AbortSignal): Promise<string> {
-  let interval = Math.max(authorization.interval, 1)
-  const expiresAt = Date.now() + authorization.expires_in * 1000
-  while (Date.now() < expiresAt) {
-    await wait(interval * 1000, signal)
-    const result = await oauthRequest<{ access_token?: string; error?: string; error_description?: string }>('/oauth/access_token', new URLSearchParams({
-      client_id: clientId.trim(),
-      device_code: authorization.device_code,
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-    }), signal)
-    if (result.access_token) return result.access_token
-    if (result.error === 'authorization_pending') continue
-    if (result.error === 'slow_down') { interval += 5; continue }
-    if (result.error === 'expired_token') throw new Error('The GitHub authorization code expired. Start again.')
-    if (result.error === 'access_denied') throw new Error('GitHub authorization was denied.')
-    throw new Error(result.error_description ?? 'GitHub authorization failed.')
-  }
-  throw new Error('The GitHub authorization code expired. Start again.')
-}
-
 async function request<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     ...options,
@@ -97,6 +40,19 @@ async function request<T>(path: string, token: string, options: RequestInit = {}
 
 export async function getAuthenticatedUser(token: string, signal?: AbortSignal) {
   return request<{ login: string }>('/user', token, { signal })
+}
+
+export async function hasPersonalInstallation(token: string, owner: string, appSlug: string, signal?: AbortSignal) {
+  for (let page = 1; ; page++) {
+    const result = await request<{ installations: { account: { login: string; type: string }; app_slug: string; suspended_at: string | null }[] }>(
+      `/user/installations?per_page=100&page=${page}`, token, { signal },
+    )
+    if (!Array.isArray(result.installations)) throw new Error('Could not verify the GitHub App installation.')
+    if (result.installations.some(installation => installation.account?.type === 'User' &&
+      installation.account.login.toLowerCase() === owner.toLowerCase() &&
+      installation.app_slug === appSlug && !installation.suspended_at)) return true
+    if (result.installations.length < 100) return false
+  }
 }
 
 function repoPath(owner: string, repo: string) {
@@ -137,7 +93,7 @@ export async function ensurePrivateRepository(token: string, owner: string, repo
     body: JSON.stringify({ name: repo, description: 'Private Meet-up Planner data', private: true, auto_init: true }),
   })
   if (created.status === 401) throw new GitHubAuthError()
-  if (!created.ok) throw new Error(`Could not create the private data repository (${created.status}). Ensure the GitHub App is installed on your account with Repository creation: Read and write permission, or create the private repository manually and grant the app access.`)
+  if (!created.ok) throw new Error(`Could not create or access the private data repository (${created.status}). If it already exists, grant the GitHub App access to it. Otherwise, enable Repository creation: Read and write, or create a private repository manually and select it in the app installation.`)
   const repository = await created.json() as Repo
   if (!repository.private || repository.owner.login.toLowerCase() !== owner.toLowerCase() || !repository.default_branch) {
     throw new Error('GitHub did not create a private repository owned by your account.')
