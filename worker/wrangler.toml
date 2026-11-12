@@ -1,0 +1,8 @@
+name = "meet-up-planner-auth"
+main = "index.ts"
+compatibility_date = "2026-11-01"
+
+[vars]
+GITHUB_CLIENT_ID = "replace-with-github-app-client-id"
+PLANNER_ORIGIN = "https://your-account.github.io"
+CALLBACK_URL = "https://your-account.github.io/Meet-up-Planner/"
