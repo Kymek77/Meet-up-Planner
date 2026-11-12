@@ -5,12 +5,20 @@ type Repo = { private: boolean; owner: { login: string } }
 type RemoteFile = { sha: string; content: string; encoding: string }
 export interface SyncTarget { owner: string; repo: string; branch: string; path: string }
 
+export class CloudConflictError extends Error {
+  constructor() {
+    super('The cloud copy changed since your last sync.')
+    this.name = 'CloudConflictError'
+  }
+}
+
 async function request<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, {
     ...options,
     headers: { Accept: 'application/vnd.github+json', Authorization: ['Bearer', token].join(' '), 'X-GitHub-Api-Version': '2022-11-28', ...options.headers },
   })
-  if (!response.ok) throw new Error(response.status === 409 ? 'The cloud copy changed. Pull it before pushing again.' : `GitHub request failed (${response.status}). Check your token and repository permissions.`)
+  if (response.status === 409) throw new CloudConflictError()
+  if (!response.ok) throw new Error(`GitHub request failed (${response.status}). Check your token and repository permissions.`)
   return response.json() as Promise<T>
 }
 

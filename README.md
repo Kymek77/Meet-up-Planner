@@ -29,7 +29,7 @@ In Settings, export a readable JSON backup or a text itinerary. Import validates
 3. In Settings, enter your GitHub username, repository, branch and file path (default `data/meetup-planner.json`) and the token. The token stays in memory only, and is cleared when you leave Settings or reload.
 4. Push from the device containing your data. On another device, pull the cloud copy. Pull replaces local data, so export a backup first.
 
-Sync is manual. Each push uses the last known GitHub blob SHA; GitHub rejects a stale or missing SHA when the file already exists. If another device has changed the cloud copy, export a local backup before pulling it; there is no automatic merge. The app verifies that the repository is private and owned by the authenticated account.
+Sync is manual. Each push uses the last known GitHub blob SHA. If another device has changed the cloud copy, the app shows a conflict choice: use the latest cloud copy on this device, or explicitly overwrite the cloud copy with this device's data. The app does not automatically merge records. The app verifies that the repository is private and owned by the authenticated account.
 
 **Current limitations:** GitHub OAuth Device Flow, automatic background sync, and a conflict-resolution interface are not implemented. The current token-based manual sync is not the requested GitHub sign-in experience. Changes made offline remain local until manually pushed.
 

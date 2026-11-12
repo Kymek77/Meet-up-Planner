@@ -1,0 +1,7 @@
+.sync-conflict{margin-top:8px;padding:18px;border:1px solid #d5aa80;border-radius:14px;background:#fff9f2}
+.sync-conflict h3{margin:0 0 6px;font-size:1rem}
+.sync-conflict p{margin:0 0 14px;color:#6d6258;font-size:.9rem}
+.conflict-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}
+.conflict-summary div{display:grid;gap:4px;padding:12px;border-radius:10px;background:#fff}
+.conflict-summary span{color:#6d6258;font-size:.82rem}
+@media(max-width:560px){.conflict-summary{grid-template-columns:1fr}}

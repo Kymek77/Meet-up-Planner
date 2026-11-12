@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { readCloud, writeCloud } from './sync'
+import { CloudConflictError, readCloud, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -27,5 +27,10 @@ describe('GitHub sync', () => {
     vi.stubGlobal('fetch', fetch)
     await expect(writeCloud('example', target, emptyData())).rejects.toThrow('private repository')
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+  it('identifies a stale cloud version as a resolvable conflict', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(new Response('', { status: 409 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(writeCloud('example', target, emptyData(), 'stale')).rejects.toBeInstanceOf(CloudConflictError)
   })
 })
