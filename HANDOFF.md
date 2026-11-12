@@ -182,7 +182,7 @@ Cloudflare's first build failed with **root directory not found** because the `w
    - `non_2xx_response`: use the upstream status and GitHub request ID to investigate the GitHub-side response. The response body is intentionally not logged.
    - `fetch_failed`: the Worker could not complete its outbound GitHub request; investigate outbound connectivity or a transient GitHub/network failure.
    - `invalid_json` or `invalid_response`: GitHub returned a successful HTTP status but the response could not be parsed or did not match the expected token/device-flow shape.
-   
+
    Before the updated Worker is deployed, existing log entries will not include these diagnostics. Do not share request bodies, authorization codes, tokens, or secrets. Once the issue is resolved, remove or reduce the temporary diagnostics if they are no longer needed.
 
    For other statuses, inspect the failing `/exchange` request in browser Developer Tools → **Network** and check Worker configuration:
