@@ -32,8 +32,8 @@ async function oauthRequest<T>(path: string, body: URLSearchParams, signal?: Abo
 }
 
 export async function requestDeviceAuthorization(clientId: string, signal?: AbortSignal): Promise<DeviceAuthorization> {
-  if (!clientId.trim()) throw new Error('Enter your OAuth app client ID.')
-  const result = await oauthRequest<DeviceAuthorization & { error?: string; error_description?: string }>('/device/code', new URLSearchParams({ client_id: clientId.trim(), scope: 'repo' }), signal)
+  if (!clientId.trim()) throw new Error('GitHub App client ID is not configured.')
+  const result = await oauthRequest<DeviceAuthorization & { error?: string; error_description?: string }>('/device/code', new URLSearchParams({ client_id: clientId.trim() }), signal)
   if (result.error || !result.device_code || !result.user_code || !result.verification_uri || !result.expires_in) {
     throw new Error(result.error_description ?? 'GitHub did not return a valid device authorization code.')
   }
@@ -119,7 +119,7 @@ export async function ensurePrivateRepository(token: string, owner: string, repo
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: repo, description: 'Private Meet-up Planner data', private: true, auto_init: true }),
   })
-  if (!created.ok) throw new Error(`Could not create the private data repository (${created.status}). Check your GitHub permissions or choose another repository name.`)
+  if (!created.ok) throw new Error(`Could not create the private data repository (${created.status}). Ensure the GitHub App is installed on your account with Repository creation: Read and write permission, or create the private repository manually and grant the app access.`)
   const repository = await created.json() as Repo
   if (!repository.private || repository.owner.login.toLowerCase() !== owner.toLowerCase() || !repository.default_branch) {
     throw new Error('GitHub did not create a private repository owned by your account.')

@@ -7,13 +7,14 @@ const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('GitHub sync', () => {
-  it('requests a device code for the configured OAuth app', async () => {
+  it('requests a device code for the configured GitHub App without OAuth scopes', async () => {
     const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 }
     const fetch = vi.fn().mockResolvedValueOnce(ok(authorization))
     vi.stubGlobal('fetch', fetch)
     expect(await requestDeviceAuthorization('client-id')).toEqual(authorization)
     expect(fetch.mock.calls[0][0]).toBe('https://github.com/login/device/code')
     expect(fetch.mock.calls[0][1].body.toString()).toContain('client_id=client-id')
+    expect(fetch.mock.calls[0][1].body.toString()).not.toContain('scope=')
   })
   it('polls through authorization pending until GitHub returns an access token', async () => {
     vi.useFakeTimers()

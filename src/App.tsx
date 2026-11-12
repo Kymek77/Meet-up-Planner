@@ -206,7 +206,8 @@ function downloadPlannerBackup(data: PlannerData, label: string) {
 
 function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: { data: PlannerData; save: (data: PlannerData) => Promise<void>; buffer: number; setBuffer: (value: number) => void; online: boolean; onSyncStatus: (status: string) => void }) {
   const [token, setToken] = useState('')
-  const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID?.trim() ?? ''
+  const clientId = import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? ''
+  const appSlug = import.meta.env.VITE_GITHUB_APP_SLUG?.trim() ?? ''
   const [deviceAuthorization, setDeviceAuthorization] = useState<DeviceAuthorization | null>(null)
   const [authenticating, setAuthenticating] = useState(false)
   const authController = useRef<AbortController | null>(null)
@@ -222,7 +223,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const retryDelay = useRef(5000)
   useEffect(() => () => authController.current?.abort(), [])
   const signIn = async () => {
-    if (!clientId) { setMessage('GitHub sign-in is not configured for this deployment.'); return }
+    if (!clientId) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
     const controller = new AbortController()
     authController.current = controller
     setBusy(true); setAuthenticating(true); setMessage(''); setConflict(null); setDeviceAuthorization(null)
@@ -443,9 +444,10 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     return () => window.clearTimeout(timer)
   }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
   return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
-    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Sign in and we’ll create or connect a private data repository for you. Your access token stays in memory and is cleared when you reload or sign out. GitHub grants this OAuth app the <code>repo</code> scope.</p>
+    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Install the Meet-up Planner GitHub App on your account, then sign in and we’ll create or connect a private data repository for you. The access token stays in memory and is cleared when you reload or sign out. Repository access is limited by the permissions you grant the GitHub App.</p>
       <div className="form">
-        {!clientId && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must set the VITE_GITHUB_CLIENT_ID build variable.</p>}
+        {!clientId && <p className="form-error" role="alert">GitHub App sign-in is not configured for this deployment. The site owner must set the VITE_GITHUB_APP_CLIENT_ID build variable.</p>}
+        {appSlug ? <a className="button secondary" href={`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`} target="_blank" rel="noreferrer">Install GitHub App</a> : <p className="form-hint">Before connecting, install the GitHub App from its GitHub page and grant it access to the private planner repository.</p>}
         {!token ? <div className="sync-actions"><button className="button" disabled={busy || !clientId} onClick={() => void signIn()}>{authenticating ? 'Waiting for GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
         {deviceAuthorization && <div className="device-code" role="status"><p>Open <a href={deviceAuthorization.verification_uri} target="_blank" rel="noreferrer">GitHub device activation</a> and enter this code:</p><strong>{deviceAuthorization.user_code}</strong><p>Code expires in about {Math.ceil(deviceAuthorization.expires_in / 60)} minutes. Keep this page open while authorizing.</p></div>}
         <label>Private data repository<input value={repo} disabled={Boolean(token)} onChange={e => { setRepo(e.target.value); localStorage.setItem('meetup-repo', e.target.value) }} placeholder="meet-up-planner-data" /></label>
