@@ -164,9 +164,11 @@ Write and maintain tests for meet-up creation/update, conflict detection, travel
 
 Treat this checklist as a product-level audit, not a claim that each item has already been tested or fully implemented. Check the current application and tests before reporting an item complete.
 
-## Current branch / PR handoff
+## Authentication fix handoff
 
-The current branch is `copilot/update-worker-url`. It carries the authentication Worker and browser-only deployment guidance, GitHub web authorization with PKCE and a device-code fallback, personal-installation detection, and an attempt to automatically create a private data repository. The latest commit adds temporary, privacy-safe diagnostics for GitHub token-exchange failures. Existing local-first sync, validation, conflict handling and backups remain in place. The owner intends to merge the branch; no merge is performed by this handoff.
+**Latest investigation:** The `fetch_failed` log is consistent with the Worker setting `redirect: 'error'`, which Cloudflare Workers does not implement and rejects before sending the request. The Worker now uses `redirect: 'manual'` and rejects all non-2xx responses, including redirects, without forwarding credentials. Deploy this change to Cloudflare and restart sign-in with a fresh authorization code; a successful live exchange is still unverified. If `fetch_failed` persists after deployment, investigate outbound connectivity rather than assuming this was the only cause. See [Cloudflare's Request documentation](https://developers.cloudflare.com/workers/runtime-apis/request/).
+
+This fix changes the Worker, its authentication tests and troubleshooting documentation. The observed `fetch_failed` log does not include an exception, so the unsupported redirect mode is the likely cause, not a confirmed live diagnosis. The fix has not yet been deployed or verified against a real GitHub sign-in.
 
 Cloudflare's first build failed with **root directory not found** because the `worker` folder was not yet on `main`; the folder is now present on the deployed branch. In Cloudflare Workers Builds, use root directory `worker`, Worker name `meet-up-planner-auth`, a blank build command, deploy command `npx wrangler deploy`, preview builds off, and Cloudflare Access off.
 
@@ -175,7 +177,7 @@ Cloudflare's first build failed with **root directory not found** because the `w
 1. Confirm the GitHub App is public if other accounts will use it, with the exact deployed planner URL as homepage and callback, Device Flow enabled, webhooks disabled, and **Contents: read and write** plus **Repository creation: read and write** permissions. Approve changed permissions on existing installations.
 2. In the deployed Worker's Cloudflare **Settings → Variables and Secrets**, add text runtime variables `GITHUB_CLIENT_ID`, `PLANNER_ORIGIN` (origin only, no trailing slash) and `CALLBACK_URL` (the exact planner callback URL including trailing slash). Add the GitHub App client secret as a **Secret** named `GITHUB_CLIENT_SECRET` and deploy the configuration. Never put the secret in Git, frontend configuration or logs.
 3. In repository **Settings → Secrets and variables → Actions → Variables**, set the public variables `MEETUP_APP_CLIENT_ID`, `MEETUP_APP_SLUG` and `MEETUP_AUTH_URL` (the Worker URL). Ensure Pages uses **GitHub Actions**. The latest Pages workflow run (#9) succeeded, but a successful build/deployment does not verify the live Worker or prove the built site received the intended Worker URL.
-4. **Current live sign-in status:** GitHub authorization redirects back to the planner, but the Worker's `/exchange` request returns HTTP 502. The browser's `OPTIONS` preflight returns 204. Cloudflare's live request event shows the POST reaching the Worker and returning 502, but not the result of the Worker's separate outbound request to GitHub. The latest code adds safe diagnostics around that upstream request. Merge/deploy the updated Worker, retry sign-in from the beginning to obtain a fresh authorization code, then inspect **Workers & Pages → `meet-up-planner-auth` → Logs** for `GitHub authentication upstream failure`. The log contains only a category, upstream HTTP status and GitHub request ID when available, and a sanitized OAuth error code when applicable. It never logs request or response bodies, authorization codes, PKCE verifiers, tokens, or secrets.
+4. **Current live sign-in status:** GitHub authorization redirects back to the planner, but the deployed Worker's `/exchange` request returned HTTP 502 and logged `fetch_failed`; the browser's `OPTIONS` preflight returned 204. Merge and deploy the redirect fix, confirm Cloudflare deployed the new revision, and retry sign-in from the beginning to obtain a fresh authorization code. If it still fails, inspect **Workers & Pages → `meet-up-planner-auth` → Logs** for `GitHub authentication upstream failure`. The log contains only a category, upstream HTTP status and GitHub request ID when available, and a sanitized OAuth error code when applicable. It never logs request or response bodies, authorization codes, PKCE verifiers, tokens, or secrets.
    
    Interpret the diagnostic as follows:
    - `oauth_error` with an `errorCode`: verify the Worker client ID and secret belong to the same GitHub App, and that the app callback URL exactly matches `CALLBACK_URL`; then retry with a fresh authorization.
@@ -183,19 +185,19 @@ Cloudflare's first build failed with **root directory not found** because the `w
    - `fetch_failed`: the Worker could not complete its outbound GitHub request; investigate outbound connectivity or a transient GitHub/network failure.
    - `invalid_json` or `invalid_response`: GitHub returned a successful HTTP status but the response could not be parsed or did not match the expected token/device-flow shape.
 
-   Before the updated Worker is deployed, existing log entries will not include these diagnostics. Do not share request bodies, authorization codes, tokens, or secrets. Once the issue is resolved, remove or reduce the temporary diagnostics if they are no longer needed.
+   The reported log already includes these diagnostics; it predates deployment of the redirect fix. Do not share request bodies, authorization codes, tokens, or secrets. Once the issue is resolved, remove or reduce the temporary diagnostics if they are no longer needed.
 
    For other statuses, inspect the failing `/exchange` request in browser Developer Tools → **Network** and check Worker configuration:
    - `403`: the request's `Origin` must exactly equal `PLANNER_ORIGIN`.
    - `503`: check that all Worker variables/secrets exist and that `CALLBACK_URL` is a valid URL on `PLANNER_ORIGIN`.
-   - `502`: follow the diagnostic steps above; without the updated Worker, the status alone cannot identify the upstream cause.
+   - `502`: follow the diagnostic steps above; the status alone cannot identify the upstream cause.
    - `401`: GitHub returned a successful response without an access token; check the logged OAuth error code or invalid-response category.
    Update Worker configuration in Cloudflare and deploy it after any changes. The Worker URL is the endpoint, not the GitHub callback URL.
 5. Once the Worker is correctly configured, merging/pushing to the configured `main` branch triggers the GitHub Pages workflow and, if Cloudflare Workers Builds is connected to that branch, a Worker build/deployment. A Pages rerun only rebuilds the frontend; it does not change Worker runtime variables or secrets. Confirm both deployments, then test authorization, installation if prompted, private repository creation and JSON initialization, reconnection, device-code fallback, conflicts, and offline/reconnect behavior without losing local data. The complete live flow remains unverified.
 
 The GitHub installation page may require selecting an existing repository when choosing selected repositories. All-repository access is broader; GitHub controls this choice. Repository creation also depends on GitHub permissions, and a 404 can mean an existing repository is inaccessible. The Worker handles sign-in only; sync calls GitHub directly. The Worker Free plan has request limits, including device-flow polling, and its origin check alone does not prevent abuse.
 
-Most recent validation of the diagnostic code: lint passed, all 27 tests passed, and the production build passed. Secret scanning found no secrets and CodeQL reported no alerts. The Worker change is committed as `b705927` (`Add safe GitHub exchange diagnostics`). Live Worker deployment and a successful sign-in have not yet been verified; rerun the live check after deployment.
+Most recent local validation of the redirect fix: lint passed, all 28 tests passed, and the production build passed. The tests mock the upstream fetch; they do not prove the deployed Worker can exchange a real authorization code. Live Worker deployment and successful sign-in remain to be verified.
 
 ## Known GitHub sync behavior
 

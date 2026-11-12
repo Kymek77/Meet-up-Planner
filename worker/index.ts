@@ -78,7 +78,7 @@ export default {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
         body: parameters,
-        redirect: 'error',
+        redirect: 'manual',
       })
     } catch {
       logGitHubFailure('fetch_failed')
