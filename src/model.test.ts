@@ -43,7 +43,7 @@ describe('scheduling', () => {
   })
   it('summarizes today, the next confirmed plan, and stale contact dates', () => {
     const now = new Date('2026-12-21T09:00:00')
-    const today = meeting('today', '10:00', '11:00')
+    const today = { ...meeting('today', '10:00', '11:00'), status: 'tentative' as const }
     const cancelled = { ...meeting('cancelled', '11:00', '12:00'), status: 'cancelled' as const }
     const next = { ...meeting('next', '12:00', '13:00'), start: '2026-12-22T12:00', end: '2026-12-22T13:00' }
     const recent = { ...person, id: 'recent', lastContacted: '2026-11-22' }
