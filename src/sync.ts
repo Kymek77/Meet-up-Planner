@@ -20,6 +20,20 @@ export class CloudConflictError extends Error {
   }
 }
 
+export class GitHubAuthError extends Error {
+  constructor() {
+    super('Your GitHub App sign-in expired or was revoked. Connect GitHub again.')
+    this.name = 'GitHubAuthError'
+  }
+}
+
+export class GitHubPermissionError extends Error {
+  constructor() {
+    super('The GitHub App cannot access this repository. Check that it is installed for the repository and has Contents: Read and write permission.')
+    this.name = 'GitHubPermissionError'
+  }
+}
+
 async function oauthRequest<T>(path: string, body: URLSearchParams, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${OAUTH}${path}`, {
     method: 'POST',
@@ -75,7 +89,9 @@ async function request<T>(path: string, token: string, options: RequestInit = {}
     headers: { Accept: 'application/vnd.github+json', Authorization: ['Bearer', token].join(' '), 'X-GitHub-Api-Version': '2022-11-28', ...options.headers },
   })
   if (response.status === 409) throw new CloudConflictError()
-  if (!response.ok) throw new Error(`GitHub request failed (${response.status}). Check your token and repository permissions.`)
+  if (response.status === 401) throw new GitHubAuthError()
+  if (response.status === 403) throw new GitHubPermissionError()
+  if (!response.ok) throw new Error(`GitHub request failed (${response.status}). Check your GitHub App access and repository settings.`)
   return response.json() as Promise<T>
 }
 
@@ -112,13 +128,15 @@ export async function ensurePrivateRepository(token: string, owner: string, repo
     }
     return { branch: repository.default_branch, created: false }
   }
-  if (existing.status !== 404) throw new Error(`Could not check the data repository (${existing.status}).`)
+  if (existing.status === 401) throw new GitHubAuthError()
+  if (existing.status !== 404) throw new Error(`Could not check the data repository (${existing.status}). Check that the GitHub App is installed on your account.`)
 
   const created = await fetch(`${API}/user/repos`, {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: repo, description: 'Private Meet-up Planner data', private: true, auto_init: true }),
   })
+  if (created.status === 401) throw new GitHubAuthError()
   if (!created.ok) throw new Error(`Could not create the private data repository (${created.status}). Ensure the GitHub App is installed on your account with Repository creation: Read and write permission, or create the private repository manually and grant the app access.`)
   const repository = await created.json() as Repo
   if (!repository.private || repository.owner.login.toLowerCase() !== owner.toLowerCase() || !repository.default_branch) {

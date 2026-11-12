@@ -3,7 +3,7 @@ import { addHours, format, parseISO } from 'date-fns'
 import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
 import { usePlanner } from './store'
-import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud, type DeviceAuthorization } from './sync'
+import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud, type DeviceAuthorization } from './sync'
 import Calendar from './Calendar'
 import './sync.css'
 
@@ -307,7 +307,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     setMessage('The cloud copy changed since your last sync. Choose which version to keep.')
   }, [token])
   const sync = async (direction: 'pull' | 'push') => {
-    if (!token || !owner || !repo) { setMessage('Enter your GitHub token, username and private repository.'); return }
+    if (!token || !owner || !repo) { setMessage('Connect the GitHub App before syncing.'); return }
     if (direction === 'pull' && !window.confirm('Replace all local planner data with the cloud copy? A dated backup will be downloaded first.')) return
     if (direction === 'pull') downloadPlannerBackup(data, 'before-pull')
     setBusy(true); setMessage('')
@@ -339,7 +339,11 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       }
       rememberTarget()
     } catch (e) {
-      if (direction === 'push' && e instanceof CloudConflictError) {
+      if (e instanceof GitHubAuthError) {
+        setToken('')
+        setMessage(e.message)
+        onSyncStatus('GitHub session expired · Connect GitHub again to resume syncing.')
+      } else if (direction === 'push' && e instanceof CloudConflictError) {
         try {
           await showLatestConflict(syncTarget)
           onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')
@@ -347,7 +351,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
         catch (readError) { setMessage(readError instanceof Error ? readError.message : 'Could not load the latest cloud copy.') }
       } else {
         setMessage(e instanceof Error ? e.message : 'Sync failed. Please try again.')
-        onSyncStatus('Sync failed · Your changes remain saved locally.')
+        onSyncStatus(e instanceof GitHubPermissionError ? 'GitHub permission issue · Check the app installation and permissions.' : 'Sync failed · Your changes remain saved locally.')
       }
     }
     finally { setBusy(false) }
@@ -377,13 +381,20 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       rememberTarget()
       setConflict(null)
     } catch (e) {
-      if (e instanceof CloudConflictError) {
+      if (e instanceof GitHubAuthError) {
+        setToken('')
+        setMessage(e.message)
+        onSyncStatus('GitHub session expired · Connect GitHub again to resume syncing.')
+      } else if (e instanceof CloudConflictError) {
         try {
           await showLatestConflict(syncTarget)
           onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')
         }
         catch (readError) { setMessage(readError instanceof Error ? readError.message : 'Could not load the latest cloud copy.') }
-      } else setMessage(e instanceof Error ? e.message : 'Could not resolve the sync conflict.')
+      } else {
+        setMessage(e instanceof Error ? e.message : 'Could not resolve the sync conflict.')
+        if (e instanceof GitHubPermissionError) onSyncStatus('GitHub permission issue · Check the app installation and permissions.')
+      }
     } finally { setBusy(false) }
   }
   useEffect(() => {
@@ -417,7 +428,14 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
         rememberTarget()
         onSyncStatus('Synced with GitHub')
       } catch (e) {
-        if (e instanceof CloudConflictError) {
+        if (e instanceof GitHubAuthError) {
+          setToken('')
+          setMessage(e.message)
+          onSyncStatus('GitHub session expired · Connect GitHub again to resume syncing.')
+        } else if (e instanceof GitHubPermissionError) {
+          setMessage(e.message)
+          onSyncStatus('GitHub permission issue · Check the app installation and permissions.')
+        } else if (e instanceof CloudConflictError) {
           try {
             await showLatestConflict(syncTarget)
             onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')

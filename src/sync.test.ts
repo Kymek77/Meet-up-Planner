@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { CloudConflictError, ensurePrivateRepository, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -55,6 +55,14 @@ describe('GitHub sync', () => {
     vi.stubGlobal('fetch', fetch)
     await expect(writeCloud('example', target, emptyData())).rejects.toThrow('private repository')
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+  it('explains when GitHub App repository permissions are insufficient', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(ok({ login: 'me' }))
+      .mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } }))
+      .mockResolvedValueOnce(new Response('', { status: 403 })))
+
+    await expect(writeCloud('example', target, emptyData())).rejects.toBeInstanceOf(GitHubPermissionError)
   })
   it('creates a private initialized repository when it does not exist', async () => {
     const fetch = vi.fn()
