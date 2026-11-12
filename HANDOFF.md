@@ -12,7 +12,7 @@ The experience should feel like a polished, calm, personal planner—not a busin
 
 ## Non-goals
 
-Do not build group availability polls, friend-facing booking pages, shared editing or multi-user collaboration, messaging integrations, calendar OAuth, or a backend server/database service.
+Do not build group availability polls, friend-facing booking pages, shared editing or multi-user collaboration, messaging integrations, calendar OAuth, or a backend planner-data server/database. The Cloudflare Worker is limited to GitHub authentication.
 
 ## Product workflow
 
@@ -116,8 +116,8 @@ Show the current planning period, friend count, confirmed count, tentative/await
 
 Use the GitHub App created for this planner. GitHub Pages uses GitHub App web authorization with PKCE and a Cloudflare Worker for the token exchange:
 
-1. The user starts **Connect GitHub** in planner Settings. If the app is not installed on their personal account, the planner offers GitHub's installation page and resumes after the user returns.
-2. The user authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
+1. The user starts **Connect GitHub** in planner Settings, authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
+2. If the app is not installed on their personal account, the planner offers GitHub's installation page; the user returns to the planner and selects **Continue after installation**.
 3. The user token remains in memory only; it is cleared on reload/sign-out and the user reconnects in each browser session. Never put an app client secret or private key in frontend code or build variables.
 4. Request **Contents: Read and write** and **Repository creation: Read and write** for automatic creation. Enable Device Flow, disable webhooks and configure the deployed planner URL as the homepage and exact callback URL. The site owner can deploy and configure the Worker through the Cloudflare browser dashboard as described in README.
 5. On successful sign-in, create or connect a private `meet-up-planner-data` repository and initialize `data/meetup-planner.json`. If creation is not permitted, instruct the user to create a private repository manually and grant the app access.
@@ -166,11 +166,20 @@ Treat this checklist as a product-level audit, not a claim that each item has al
 
 ## Current branch / PR handoff
 
-GitHub sync includes private repository creation/fallback guidance, local-first debounced sync, offline retries, and conflict handling/backups. Sign-in requires the configured Cloudflare Worker and the Pages Actions variables listed above.
+The current branch is `copilot/fix-github-sign-in-user-flow`. It adds the authentication Worker and browser-only deployment guidance, GitHub web authorization with PKCE and a device-code fallback, personal-installation detection, and an attempt to automatically create a private data repository. Existing local-first sync, validation, conflict handling and backups remain in place. The owner intends to merge the branch; no merge is performed by this handoff.
 
-Before merging, confirm the GitHub App and Worker are configured as described above, the repository Actions Variables exist, Pages uses **GitHub Actions**, and PR checks pass. Merging to `main` triggers the Pages deployment. After deployment, test installation/sign-in, creation or manual connection of a private data repository, creation of the planner JSON, a refresh/reconnect, local persistence, and resumed sync.
+Cloudflare's first build failed with **root directory not found** because the `worker` folder is on this branch but was not yet on `main`. After merging, verify `worker/index.ts` and `worker/wrangler.toml` exist on `main`, then retry the Cloudflare build using `main` and root directory `worker`. In Cloudflare Workers Builds use Worker name `meet-up-planner-auth`, a blank build command, deploy command `npx wrangler deploy`, preview builds off, and Cloudflare Access off. The Worker does not become operational until its runtime variables and secret are configured.
 
-Run the current lint, tests, build, and security checks for the implementation before release.
+### Remaining deployment steps
+
+1. Confirm the GitHub App is public if other accounts will use it, with the exact deployed planner URL as homepage and callback, Device Flow enabled, webhooks disabled, and **Contents: read and write** plus **Repository creation: read and write** permissions. Approve changed permissions on existing installations.
+2. In the deployed Worker's Cloudflare **Settings → Variables and Secrets**, add text runtime variables `GITHUB_CLIENT_ID`, `PLANNER_ORIGIN` (origin only, no trailing slash) and `CALLBACK_URL` (the exact planner callback URL including trailing slash). Add the GitHub App client secret as a **Secret** named `GITHUB_CLIENT_SECRET` and deploy the configuration. Never put the secret in Git, frontend configuration or logs.
+3. In repository **Settings → Secrets and variables → Actions → Variables**, set the public variables `MEETUP_APP_CLIENT_ID`, `MEETUP_APP_SLUG` and `MEETUP_AUTH_URL` (the Worker URL). Ensure Pages uses **GitHub Actions**, then run the Pages deployment workflow after these variables are set. Merging triggers a deployment but does not automatically configure the Worker or these variables.
+4. Test the live flow: authorize GitHub, install the app if prompted, return and continue, automatically create a private repository and initialize the JSON file, reconnect to an existing installation/repository, and exercise the device-code fallback. Test conflicts and offline/reconnect behavior without losing local data. The live Worker, GitHub installation, repository creation and browser/PWA flows have **not** been verified end to end.
+
+The GitHub installation page may require selecting an existing repository when choosing selected repositories. All-repository access is broader; GitHub controls this choice. Repository creation also depends on GitHub permissions, and a 404 can mean an existing repository is inaccessible. The Worker handles sign-in only; sync calls GitHub directly. The Worker Free plan has request limits, including device-flow polling, and its origin check alone does not prevent abuse.
+
+Most recent code validation before this documentation update: lint, 25 tests and production build passed; secret scanning found no secrets and CodeQL reported no alerts. Run current checks again before release.
 
 ## Known GitHub sync behavior
 
