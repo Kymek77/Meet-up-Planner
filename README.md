@@ -24,25 +24,26 @@ In Settings, export a readable JSON backup or a text itinerary. Import validates
 
 ## Optional GitHub sync
 
-### Deployment setup
+### One-time deployment setup (browser only)
 
-1. Register a **GitHub App** under Settings → Developer settings → GitHub Apps. Set its homepage and callback URL to the exact deployed planner URL, including its trailing slash (for example `https://YOUR-ACCOUNT.github.io/Meet-up-Planner/`). Enable **Device Flow** for the mobile fallback and turn webhooks off. Request **Contents: Read and write**, and **Repository creation: Read and write** if it should create repositories. Make the app public if other GitHub accounts should use it. If changing permissions on an existing app, approve the changes on its installation.
-2. Create a Cloudflare account on the **Workers Free** plan. In `worker/wrangler.toml`, set `GITHUB_CLIENT_ID` to the app's client ID, `PLANNER_ORIGIN` to the exact planner origin (for example `https://YOUR-ACCOUNT.github.io`), and `CALLBACK_URL` to the same exact callback URL registered above. Use a dedicated origin if possible: other pages on the same origin have the same browser access. For local testing, use a separate Worker and GitHub App callback configured for the local Vite origin and path.
-3. Generate a GitHub App client secret in its settings and store it as a Worker secret, **not** in Git, `wrangler.toml`, frontend variables, or logs. With Node.js installed, authenticate Wrangler and deploy:
+The site owner performs this setup once; individual planner users do not need a Cloudflare account. No local installation or terminal is required.
 
-   ```sh
-   npx wrangler login
-   npx wrangler secret put GITHUB_CLIENT_SECRET --config worker/wrangler.toml
-   npx wrangler deploy --config worker/wrangler.toml
-   ```
+1. In GitHub → Settings → Developer settings → GitHub Apps, configure the existing **GitHub App** (or register one). Set its homepage and callback URL to the exact deployed planner URL, including the trailing slash, e.g. `https://YOUR-ACCOUNT.github.io/Meet-up-Planner/`. Enable **Device Flow**, turn webhooks off, and request **Contents: read and write** and **Repository creation: read and write**. Make the app public for other GitHub accounts. Approve changed permissions on any existing installation.
+2. Ensure these Worker files are merged into the GitHub branch you will deploy. Create a Cloudflare account on the **Workers Free** plan. In the Cloudflare dashboard, open **Workers & Pages → Create application → GitHub**, authorize Cloudflare's GitHub integration and select this repository. Name the Worker `meet-up-planner-auth` to match `worker/wrangler.toml`, choose the deployment branch, and set its **root directory** to `worker`. Leave the optional build command empty and use the default deploy command. Select **Save and Deploy**. Cloudflare runs the deployment; you do not need Wrangler on your computer. The Worker cannot sign users in until the next step is complete.
+3. In the deployed Worker's Cloudflare **Settings → Variables and Secrets**, add these runtime variables as text:
+   - `GITHUB_CLIENT_ID`: the GitHub App's client ID.
+   - `PLANNER_ORIGIN`: the planner origin only, e.g. `https://YOUR-ACCOUNT.github.io` (no path or trailing slash).
+   - `CALLBACK_URL`: the exact callback URL configured in step 1.
 
-   Copy the deployed Worker URL. The Worker handles authorization only; it doesn't store planner data or tokens. Its origin check is a browser protection, not an abuse-prevention or authentication mechanism: public requests can still consume the free quota. Configure Cloudflare protections if needed.
-4. In this repository's Settings → Secrets and variables → Actions → Variables, set `MEETUP_APP_CLIENT_ID`, `MEETUP_APP_SLUG` (from `github.com/apps/<slug>`) and `MEETUP_AUTH_URL` (the Worker URL), then redeploy Pages. These are public build values; never put the client secret or private key in them. Local development uses `VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG` and `VITE_GITHUB_AUTH_URL` in ignored `.env.local`.
+   Generate a client secret in the GitHub App settings, add it as a **Secret** named `GITHUB_CLIENT_SECRET`, and select **Deploy** to apply the changes. Never put this secret in Git, build variables, or logs. `keep_vars` in the Worker configuration preserves dashboard variables across deployments. Use a dedicated planner origin if possible: other pages on the same origin have the same browser access.
+4. Copy the Worker's `workers.dev` URL. In this repository's **Settings → Secrets and variables → Actions → Variables**, set `MEETUP_APP_CLIENT_ID` to the same client ID, `MEETUP_APP_SLUG` to the slug from `github.com/apps/<slug>`, and `MEETUP_AUTH_URL` to the Worker URL. These are public build values, not secrets. Redeploy Pages by running **Deploy Meet-up Planner** from the repository's Actions tab. Cloudflare automatically deploys the Worker when its configured branch changes. Local development can use a separate Worker and GitHub App with matching callback and `VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`, and `VITE_GITHUB_AUTH_URL` in ignored `.env.local`.
+
+The Worker handles authorization only and does not store planner data or tokens. Its origin check is a browser protection, not abuse prevention: public requests can still consume the free quota. Configure Cloudflare protections if needed.
 
 ### Connect your planner
 
-1. In planner Settings choose **Install GitHub App**. To limit access to one repository, first create a private `meet-up-planner-data` repository on GitHub (initialize it with a README), then select only that repository during installation. Alternatively, grant access to all repositories and the app can attempt to create the private data repository; this gives the app access to your other repositories too. If the app is already installed, update its repository selection in GitHub settings as needed.
-2. Choose **Connect GitHub** and authorize on GitHub. On return, the planner verifies the private repository and initializes `data/meetup-planner.json` or loads the existing data. If creation is denied or an existing repository is inaccessible, create/select it manually as above. The app never silently overwrites an existing conflicting planner.
+1. In planner Settings choose **Connect GitHub** and authorize on GitHub. If the app is not installed on your personal account, the planner offers an installation link. Approve the installation, return to the planner, and choose **Continue after installation**.
+2. The planner connects an accessible existing private `meet-up-planner-data` repository, or attempts to create one automatically, then initializes `data/meetup-planner.json`. GitHub automatically grants an app access to repositories it creates. Installation with **All repositories** also grants access to your other repositories; with **Only select repositories**, GitHub may require an existing repository to be selected before installation. If an existing planner repository is not accessible or creation is denied, update the installation's repository selection or permissions in GitHub settings. The app never silently overwrites an existing conflicting planner.
 
 On an installed mobile app where GitHub opens in a separate browser and cannot return to the same session, choose **Use device code instead**. Open the GitHub activation link, enter the displayed code, then return to the planner while it waits for approval.
 

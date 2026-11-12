@@ -82,6 +82,14 @@ describe('GitHub sync', () => {
     await expect(ensurePrivateRepository('example', 'me', 'planner-data')).resolves.toEqual({ branch: 'main', created: false })
     await expect(ensurePrivateRepository('example', 'me', 'public-data')).rejects.toThrow('must be private')
   })
+  it('explains inaccessible existing repositories without attempting a write', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(new Response('', { status: 422 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(ensurePrivateRepository('example', 'me', 'planner-data')).rejects.toThrow('If it already exists, grant the GitHub App access')
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
   it('identifies a stale cloud version as a resolvable conflict', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(new Response('', { status: 409 }))
     vi.stubGlobal('fetch', fetch)
