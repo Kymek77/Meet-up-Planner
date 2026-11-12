@@ -266,15 +266,16 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       const key = shaKey(syncTarget)
       const remote = await readCloud(accessToken, syncTarget)
       if (controller.signal.aborted) return
+      const currentData = usePlanner.getState().data
       let foundConflict = false
       if (!remote) {
-        const sha = await writeCloud(accessToken, syncTarget, data)
+        const sha = await writeCloud(accessToken, syncTarget, currentData)
         localStorage.setItem(key, sha)
-        syncedData.current = JSON.stringify(data)
+        syncedData.current = JSON.stringify(currentData)
         setMessage(repository.created ? 'Private repository created and your planner initialized.' : 'Your private repository is ready and the planner file was initialized.')
       } else {
         const knownSha = localStorage.getItem(key)
-        const localEmpty = !data.friends.length && !data.periods.length && !data.availability.length && !data.meetings.length
+        const localEmpty = !currentData.friends.length && !currentData.periods.length && !currentData.availability.length && !currentData.meetings.length
         const remoteEmpty = !remote.data.friends.length && !remote.data.periods.length && !remote.data.availability.length && !remote.data.meetings.length
         if (knownSha && knownSha !== remote.sha) {
           setConflict(remote)
@@ -287,7 +288,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
           localStorage.setItem(key, remote.sha)
           syncedData.current = JSON.stringify(remote.data)
           setMessage('Your existing planner was loaded from GitHub.')
-        } else if (!knownSha && JSON.stringify(data) !== JSON.stringify(remote.data)) {
+        } else if (!knownSha && JSON.stringify(currentData) !== JSON.stringify(remote.data)) {
           setConflict(remote)
           foundConflict = true
           setMessage('A planner already exists in this repository. Choose which version to keep.')
@@ -314,7 +315,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       if (authController.current === controller) authController.current = null
       setBusy(false); setAuthenticating(false); setDeviceAuthorization(null)
     }
-  }, [appSlug, repo, path, shaKey, data, save, onSyncStatus])
+  }, [appSlug, repo, path, shaKey, save, onSyncStatus])
   const signInWithDevice = () => {
     void completeSignIn(async signal => {
       const authorization = await requestDeviceAuthorization(workerUrl, signal)
