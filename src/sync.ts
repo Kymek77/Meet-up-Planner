@@ -2,7 +2,7 @@ import { isPlannerData, type PlannerData } from './model'
 
 const API = 'https://api.github.com'
 const OAUTH = 'https://github.com/login'
-type Repo = { private: boolean; owner: { login: string } }
+type Repo = { private: boolean; owner: { login: string }; default_branch: string }
 type RemoteFile = { sha: string; content: string; encoding: string }
 export interface SyncTarget { owner: string; repo: string; branch: string; path: string }
 export interface DeviceAuthorization {
@@ -99,6 +99,32 @@ export async function verifyRepository(token: string, owner: string, repo: strin
   if (!repository.private || repository.owner.login.toLowerCase() !== user.login.toLowerCase()) {
     throw new Error('Use a private repository owned by your signed-in GitHub account.')
   }
+}
+
+export async function ensurePrivateRepository(token: string, owner: string, repo: string) {
+  const path = repoPath(owner, repo)
+  const headers = { Accept: 'application/vnd.github+json', Authorization: ['Bearer', token].join(' '), 'X-GitHub-Api-Version': '2022-11-28' }
+  const existing = await fetch(`${API}${path}`, { headers })
+  if (existing.ok) {
+    const repository = await existing.json() as Repo
+    if (!repository.private || repository.owner.login.toLowerCase() !== owner.toLowerCase() || !repository.default_branch) {
+      throw new Error('The selected data repository must be private and owned by your signed-in account.')
+    }
+    return { branch: repository.default_branch, created: false }
+  }
+  if (existing.status !== 404) throw new Error(`Could not check the data repository (${existing.status}).`)
+
+  const created = await fetch(`${API}/user/repos`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: repo, description: 'Private Meet-up Planner data', private: true, auto_init: true }),
+  })
+  if (!created.ok) throw new Error(`Could not create the private data repository (${created.status}). Check your GitHub permissions or choose another repository name.`)
+  const repository = await created.json() as Repo
+  if (!repository.private || repository.owner.login.toLowerCase() !== owner.toLowerCase() || !repository.default_branch) {
+    throw new Error('GitHub did not create a private repository owned by your account.')
+  }
+  return { branch: repository.default_branch, created: true }
 }
 
 export async function readCloud(token: string, target: SyncTarget): Promise<{ data: PlannerData; sha: string } | null> {

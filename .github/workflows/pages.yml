@@ -28,6 +28,7 @@ jobs:
       - run: npm run build
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_GITHUB_CLIENT_ID: ${{ vars.GITHUB_OAUTH_CLIENT_ID }}
       - uses: actions/configure-pages@v5.0.0
         with:
           enablement: true

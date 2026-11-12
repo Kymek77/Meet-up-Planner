@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { CloudConflictError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -45,6 +45,24 @@ describe('GitHub sync', () => {
     vi.stubGlobal('fetch', fetch)
     await expect(writeCloud('example', target, emptyData())).rejects.toThrow('private repository')
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+  it('creates a private initialized repository when it does not exist', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' }, default_branch: 'main' }, 201))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(ensurePrivateRepository('example', 'me', 'planner-data')).resolves.toEqual({ branch: 'main', created: true })
+    expect(fetch.mock.calls[1][0]).toBe('https://api.github.com/user/repos')
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({ name: 'planner-data', private: true, auto_init: true })
+  })
+  it('reuses an existing private repository and refuses a public one', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' }, default_branch: 'main' }))
+      .mockResolvedValueOnce(ok({ private: false, owner: { login: 'me' }, default_branch: 'main' })))
+
+    await expect(ensurePrivateRepository('example', 'me', 'planner-data')).resolves.toEqual({ branch: 'main', created: false })
+    await expect(ensurePrivateRepository('example', 'me', 'public-data')).rejects.toThrow('must be private')
   })
   it('identifies a stale cloud version as a resolvable conflict', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(new Response('', { status: 409 }))

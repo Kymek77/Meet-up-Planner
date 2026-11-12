@@ -25,13 +25,12 @@ In Settings, export a readable JSON backup or a text itinerary. Import validates
 ## Optional GitHub sync
 
 1. Create a GitHub OAuth App under Settings → Developer settings → OAuth Apps, enable **Device Flow**, and set its homepage URL to the deployed app. Device Flow does not use a redirect callback.
-2. Copy the OAuth App client ID. It is public and is not the client secret; do not put a client secret in this frontend.
-3. Create a **private** GitHub repository owned by your account and initialize it with a commit on `main`.
-4. In planner Settings, enter the client ID and sign in with GitHub. Approve the one-time device code at GitHub. Select the private repository, branch and file path (default `data/meetup-planner.json`), then push or pull.
+2. In this repository's Settings → Secrets and variables → Actions → Variables, add `GITHUB_OAUTH_CLIENT_ID` with the OAuth App's client ID, then redeploy. The client ID is public configuration; never put a client secret in this frontend or in a `VITE_` variable. For local development, set `VITE_GITHUB_CLIENT_ID` in a local `.env.local` file (do not commit it).
+3. In planner Settings, choose **Connect GitHub** and approve the one-time device code. The app creates a private `meet-up-planner-data` repository in your account if needed, then initializes `data/meetup-planner.json`. You can choose a different repository before connecting.
 
-GitHub authorizes the OAuth app with the `repo` scope. The resulting access token is kept in memory only and cleared when you leave Settings or reload, so sign in again on each browser/session. The app verifies that the selected repository is private and owned by the signed-in account. Sync is manual. If another device changed the cloud copy, the app offers to use the cloud version or explicitly overwrite it with this device's version; it does not automatically merge records. Changes made offline remain local until manually pushed.
+GitHub authorizes the OAuth app with the broad `repo` scope. The access token stays in memory and is cleared on reload or sign-out, so sign in again in each new browser session. While signed in, changes save locally first and sync automatically after a short pause. Offline changes remain in IndexedDB and sync when the app is open and the connection returns; transient errors are retried. The sync status is shown in the app, and **Sync now** remains available. If another device changed the cloud copy, the app asks which version to keep rather than silently overwriting; it downloads a dated backup before replacing either copy. It does not merge planner records automatically.
 
-**Current limitation:** Automatic background sync is not implemented.
+The client ID is public and can be embedded in the static site build. A client secret or long-lived token cannot safely be embedded in GitHub Pages. Persistent sign-in with narrower permissions would require a GitHub App and a trusted backend; this static implementation deliberately requires reauthentication after a reload.
 
 ## GitHub Pages
 
