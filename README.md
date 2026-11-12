@@ -24,14 +24,14 @@ In Settings, export a readable JSON backup or a text itinerary. Import validates
 
 ## Optional GitHub sync
 
-1. Create a **private** GitHub repository owned by your account and initialize it with a commit on `main`.
-2. Create a fine-grained personal access token limited to that repository, with Contents read and write permission.
-3. In Settings, enter your GitHub username, repository, branch and file path (default `data/meetup-planner.json`) and the token. The token stays in memory only, and is cleared when you leave Settings or reload.
-4. Push from the device containing your data. On another device, pull the cloud copy. Pull replaces local data, so export a backup first.
+1. Create a GitHub OAuth App under Settings → Developer settings → OAuth Apps, enable **Device Flow**, and set its homepage URL to the deployed app. Device Flow does not use a redirect callback.
+2. Copy the OAuth App client ID. It is public and is not the client secret; do not put a client secret in this frontend.
+3. Create a **private** GitHub repository owned by your account and initialize it with a commit on `main`.
+4. In planner Settings, enter the client ID and sign in with GitHub. Approve the one-time device code at GitHub. Select the private repository, branch and file path (default `data/meetup-planner.json`), then push or pull.
 
-Sync is manual. Each push uses the last known GitHub blob SHA; GitHub rejects a stale or missing SHA when the file already exists. If another device has changed the cloud copy, export a local backup before pulling it; there is no automatic merge. The app verifies that the repository is private and owned by the authenticated account.
+GitHub authorizes the OAuth app with the `repo` scope. The resulting access token is kept in memory only and cleared when you leave Settings or reload, so sign in again on each browser/session. The app verifies that the selected repository is private and owned by the signed-in account. Sync is manual. If another device changed the cloud copy, the app offers to use the cloud version or explicitly overwrite it with this device's version; it does not automatically merge records. Changes made offline remain local until manually pushed.
 
-**Current limitations:** GitHub OAuth Device Flow, automatic background sync, and a conflict-resolution interface are not implemented. The current token-based manual sync is not the requested GitHub sign-in experience. Changes made offline remain local until manually pushed.
+**Current limitation:** Automatic background sync is not implemented.
 
 ## GitHub Pages
 
