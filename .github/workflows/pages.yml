@@ -29,6 +29,8 @@ jobs:
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
       - uses: actions/configure-pages@v5.0.0
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3.0.1
         with:
           path: dist
