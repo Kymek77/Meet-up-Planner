@@ -24,14 +24,11 @@ In Settings, export a readable JSON backup or a text itinerary. Import validates
 
 ## Optional GitHub sync
 
-1. Create a GitHub OAuth App under Settings → Developer settings → OAuth Apps, enable **Device Flow**, and set its homepage URL to the deployed app. Device Flow does not use a redirect callback.
-2. Copy the OAuth App client ID. It is public and is not the client secret; do not put a client secret in this frontend.
-3. Create a **private** GitHub repository owned by your account and initialize it with a commit on `main`.
-4. In planner Settings, enter the client ID and sign in with GitHub. Approve the one-time device code at GitHub. Select the private repository, branch and file path (default `data/meetup-planner.json`), then push or pull.
+1. Register a **GitHub App** under Settings → Developer settings → GitHub Apps. Enable **Device Flow**, set the homepage URL to the deployed app, turn webhooks off, and request only **Contents: Read and write** plus **Repository creation: Read and write** if you want the planner to create its private data repository. Device Flow does not use a callback URL. Install the app on your account and grant it access to the data repository.
+2. In this repository's Settings → Secrets and variables → Actions → Variables, add `MEETUP_APP_CLIENT_ID` with the GitHub App's client ID and `MEETUP_APP_SLUG` with the slug from its GitHub URL (`github.com/apps/<slug>`), then redeploy. GitHub reserves the `GITHUB_` prefix for Actions, so do not use it for custom variable names. Both values are public configuration. Do not put an app client secret or private key in the frontend or Actions variables used by the Vite build. For local development, set `VITE_GITHUB_APP_CLIENT_ID` and `VITE_GITHUB_APP_SLUG` in `.env.local` (ignored by Git).
+3. In planner Settings, choose **Install GitHub App** if shown, grant the app access to your account/repository, then choose **Connect GitHub** and approve the one-time device code. The app creates a private `meet-up-planner-data` repository if the granted permissions allow it, and initializes `data/meetup-planner.json`. Otherwise, create a private repository manually and install/grant the app access to it.
 
-GitHub authorizes the OAuth app with the `repo` scope. The resulting access token is kept in memory only and cleared when you leave Settings or reload, so sign in again on each browser/session. The app verifies that the selected repository is private and owned by the signed-in account. Sync is manual. If another device changed the cloud copy, the app offers to use the cloud version or explicitly overwrite it with this device's version; it does not automatically merge records. Changes made offline remain local until manually pushed.
-
-**Current limitation:** Automatic background sync is not implemented.
+The GitHub App uses fine-grained app permissions instead of OAuth scopes. Its user access token stays in memory and is cleared on reload or sign-out, so sign in again in each new browser session. While signed in, changes save locally first and sync automatically after a short pause. Offline changes remain in IndexedDB and sync when the app is open and the connection returns; transient errors are retried. The sync status is shown in the app, and **Sync now** remains available. If another device changed the cloud copy, the app asks which version to keep rather than silently overwriting; it downloads a dated backup before replacing either copy. It does not merge planner records automatically.
 
 ## GitHub Pages
 

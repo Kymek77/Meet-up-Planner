@@ -1,19 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData } from './model'
-import { CloudConflictError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
+import { CloudConflictError, ensurePrivateRepository, GitHubPermissionError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud } from './sync'
 
 const target = { owner: 'me', repo: 'private', branch: 'main', path: 'data/meetup-planner.json' }
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('GitHub sync', () => {
-  it('requests a device code for the configured OAuth app', async () => {
+  it('requests a device code for the configured GitHub App without OAuth scopes', async () => {
     const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 }
     const fetch = vi.fn().mockResolvedValueOnce(ok(authorization))
     vi.stubGlobal('fetch', fetch)
     expect(await requestDeviceAuthorization('client-id')).toEqual(authorization)
     expect(fetch.mock.calls[0][0]).toBe('https://github.com/login/device/code')
     expect(fetch.mock.calls[0][1].body.toString()).toContain('client_id=client-id')
+    expect(fetch.mock.calls[0][1].body.toString()).not.toContain('scope=')
   })
   it('polls through authorization pending until GitHub returns an access token', async () => {
     vi.useFakeTimers()
@@ -35,6 +36,15 @@ describe('GitHub sync', () => {
     expect(body.branch).toBe('main')
     expect(JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(body.content), c => c.charCodeAt(0))))).toEqual(data)
   })
+  it('initializes the planner file without a SHA when creating it', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ content: { sha: 'created' } }))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(writeCloud('example', target, emptyData())).resolves.toBe('created')
+    const body = JSON.parse(fetch.mock.calls[2][1].body)
+    expect(body).not.toHaveProperty('sha')
+    expect(body.branch).toBe('main')
+  })
   it('reads and validates the remote copy', async () => {
     const data = emptyData(), content = btoa(JSON.stringify(data))
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ sha: 'abc', encoding: 'base64', content })))
@@ -45,6 +55,32 @@ describe('GitHub sync', () => {
     vi.stubGlobal('fetch', fetch)
     await expect(writeCloud('example', target, emptyData())).rejects.toThrow('private repository')
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+  it('explains when GitHub App repository permissions are insufficient', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(ok({ login: 'me' }))
+      .mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } }))
+      .mockResolvedValueOnce(new Response('', { status: 403 })))
+
+    await expect(writeCloud('example', target, emptyData())).rejects.toBeInstanceOf(GitHubPermissionError)
+  })
+  it('creates a private initialized repository when it does not exist', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' }, default_branch: 'main' }, 201))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(ensurePrivateRepository('example', 'me', 'planner-data')).resolves.toEqual({ branch: 'main', created: true })
+    expect(fetch.mock.calls[1][0]).toBe('https://api.github.com/user/repos')
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({ name: 'planner-data', private: true, auto_init: true })
+  })
+  it('reuses an existing private repository and refuses a public one', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' }, default_branch: 'main' }))
+      .mockResolvedValueOnce(ok({ private: false, owner: { login: 'me' }, default_branch: 'main' })))
+
+    await expect(ensurePrivateRepository('example', 'me', 'planner-data')).resolves.toEqual({ branch: 'main', created: false })
+    await expect(ensurePrivateRepository('example', 'me', 'public-data')).rejects.toThrow('must be private')
   })
   it('identifies a stale cloud version as a resolvable conflict', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(new Response('', { status: 409 }))

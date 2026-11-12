@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { emptyData, freeGaps, isPlannerData, meetingWarnings, mergeRanges, type Availability, type Meeting } from './model'
+import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, mergeRanges, type Availability, type Meeting } from './model'
 
 const period = { id: 'p', name: 'Trip', start: '2026-12-20', end: '2026-12-30' }
 const person = { id: 'f', name: 'Sam', colour: '#abcdef', priority: 'normal' as const, createdAt: '', updatedAt: '' }
@@ -40,5 +40,19 @@ describe('scheduling', () => {
     const ranges = [block('10:00', '11:00'), block('09:00', '10:00'), block('10:30', '12:00')]
     expect(mergeRanges(ranges)).toEqual([{ start: '2026-12-21T09:00', end: '2026-12-21T12:00' }])
     expect(ranges[0].end).toBe('2026-12-21T11:00')
+  })
+  it('summarizes today, the next confirmed plan, and stale contact dates', () => {
+    const now = new Date('2026-12-21T09:00:00')
+    const today = { ...meeting('today', '10:00', '11:00'), status: 'tentative' as const }
+    const cancelled = { ...meeting('cancelled', '11:00', '12:00'), status: 'cancelled' as const }
+    const next = { ...meeting('next', '12:00', '13:00'), start: '2026-12-22T12:00', end: '2026-12-22T13:00' }
+    const recent = { ...person, id: 'recent', lastContacted: '2026-11-22' }
+    const stale = { ...person, id: 'stale', lastContacted: '2026-11-20' }
+    const archived = { ...person, id: 'archived', lastContacted: '2026-10-01', archived: true }
+    const highlights = getDashboardHighlights([next, cancelled, today], [recent, stale, archived], now)
+
+    expect(highlights.today.map(item => item.id)).toEqual(['today'])
+    expect(highlights.nextConfirmed?.id).toBe('next')
+    expect(highlights.staleContacts.map(({ friend: item }) => item.id)).toEqual(['stale'])
   })
 })
