@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { beginGitHubAuthorization, exchangeGitHubCode, takeGitHubCallback } from './auth'
+import { beginGitHubAuthorization, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback } from './auth'
 import worker from '../worker/index'
 
 const origin = 'https://planner.example'
@@ -58,6 +58,18 @@ describe('GitHub web authorization', () => {
     fetch.mockRejectedValueOnce(new TypeError('Load failed'))
     await expect(exchangeGitHubCode('https://auth.example', 'code', verifier)).rejects.toThrow('Could not reach')
   })
+  it('uses the worker for device authorization and polls until approved', async () => {
+    vi.useFakeTimers()
+    const authorization = { device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 60, interval: 1 }
+    const fetch = vi.fn().mockResolvedValueOnce(json(authorization)).mockResolvedValueOnce(json({ error: 'authorization_pending' })).mockResolvedValueOnce(json({ access_token: 'example-token' }))
+    vi.stubGlobal('fetch', fetch)
+    const signal = new AbortController().signal
+    const device = await requestDeviceAuthorization('https://auth.example', signal)
+    const token = pollDeviceAuthorization('https://auth.example', device, signal)
+    await vi.advanceTimersByTimeAsync(2000)
+    await expect(token).resolves.toBe('example-token')
+    expect(fetch.mock.calls.map(call => call[0].pathname)).toEqual(['/device-code', '/device-token', '/device-token'])
+  })
 })
 
 describe('authentication worker', () => {
@@ -94,5 +106,15 @@ describe('authentication worker', () => {
     const preflight = await worker.fetch(new Request('https://auth.example/exchange', { method: 'OPTIONS', headers: { Origin: origin } }), env)
     expect(preflight.status).toBe(204)
     expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe(origin)
+  })
+  it('proxies device flow without exposing the client secret', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(json({ device_code: 'device', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 }))
+      .mockResolvedValueOnce(json({ error: 'authorization_pending' }))
+    vi.stubGlobal('fetch', fetch)
+    const make = (path: string, body: object) => new Request(`https://auth.example/${path}`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    expect(await (await worker.fetch(make('device-code', {}), env)).json()).toMatchObject({ device_code: 'device' })
+    expect(await (await worker.fetch(make('device-token', { device_code: 'device' }), env)).json()).toEqual({ error: 'authorization_pending' })
+    expect((fetch.mock.calls[0][1].body as URLSearchParams).has('client_secret')).toBe(false)
+    expect((fetch.mock.calls[1][1].body as URLSearchParams).has('client_secret')).toBe(false)
   })
 })

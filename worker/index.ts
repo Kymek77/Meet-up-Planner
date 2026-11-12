@@ -16,7 +16,8 @@ export default {
       headers.set('Access-Control-Allow-Headers', 'Content-Type')
       return new Response(null, { status: 204, headers })
     }
-    if (request.method !== 'POST' || new URL(request.url).pathname !== '/exchange') return new Response('Not found', { status: 404, headers })
+    const path = new URL(request.url).pathname
+    if (request.method !== 'POST' || !['/exchange', '/device-code', '/device-token'].includes(path)) return new Response('Not found', { status: 404, headers })
     headers.set('Content-Type', 'application/json')
     const error = (status: number) => new Response(JSON.stringify({ error: 'GitHub authorization could not be completed.' }), { status, headers })
     if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET || !env.CALLBACK_URL) return error(503)
@@ -44,18 +45,40 @@ export default {
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
       input = JSON.parse(new TextDecoder().decode(bytes))
     } catch { return error(400) }
-    if (!input || typeof input !== 'object' || !('code' in input) || !('verifier' in input) ||
-      typeof input.code !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(input.code) ||
-      typeof input.verifier !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/.test(input.verifier)) return error(400)
+    if (!input || typeof input !== 'object') return error(400)
+    const parameters = new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID })
+    let endpoint = 'oauth/access_token'
+    if (path === '/exchange') {
+      if (!('code' in input) || !('verifier' in input) ||
+        typeof input.code !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(input.code) ||
+        typeof input.verifier !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/.test(input.verifier)) return error(400)
+      parameters.set('client_secret', env.GITHUB_CLIENT_SECRET)
+      parameters.set('code', input.code)
+      parameters.set('code_verifier', input.verifier)
+      parameters.set('redirect_uri', env.CALLBACK_URL)
+    } else if (path === '/device-token') {
+      if (!('device_code' in input) || typeof input.device_code !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(input.device_code)) return error(400)
+      parameters.set('device_code', input.device_code)
+      parameters.set('grant_type', 'urn:ietf:params:oauth:grant-type:device_code')
+    } else endpoint = 'device/code'
     try {
-      const response = await fetch('https://github.com/login/oauth/access_token', {
+      const response = await fetch(`https://github.com/login/${endpoint}`, {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code: input.code, code_verifier: input.verifier, redirect_uri: env.CALLBACK_URL }),
+        body: parameters,
         redirect: 'error',
       })
       if (!response.ok) return error(502)
-      const result = await response.json() as { access_token?: unknown }
+      const result = await response.json() as Record<string, unknown>
+      if (path === '/device-code') {
+        if (typeof result.device_code !== 'string' || typeof result.user_code !== 'string' ||
+          result.verification_uri !== 'https://github.com/login/device' || typeof result.expires_in !== 'number' ||
+          typeof result.interval !== 'number' || result.expires_in <= 0 || result.interval <= 0) return error(502)
+        return new Response(JSON.stringify({ device_code: result.device_code, user_code: result.user_code, verification_uri: result.verification_uri, expires_in: result.expires_in, interval: result.interval }), { headers })
+      }
+      if (path === '/device-token' && typeof result.error === 'string' && ['authorization_pending', 'slow_down', 'expired_token', 'access_denied'].includes(result.error)) {
+        return new Response(JSON.stringify({ error: result.error }), { headers })
+      }
       if (typeof result.access_token !== 'string' || !result.access_token) return error(401)
       return new Response(JSON.stringify({ access_token: result.access_token }), { headers })
     } catch { return error(502) }

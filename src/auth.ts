@@ -34,20 +34,65 @@ export function takeGitHubCallback(url: URL) {
   return { code, verifier: pending.verifier }
 }
 
-export async function exchangeGitHubCode(workerUrl: string, code: string, verifier: string, signal?: AbortSignal) {
+async function authRequest(workerUrl: string, path: string, body: object, signal?: AbortSignal) {
   let url: URL
   try { url = new URL(workerUrl) } catch { throw new Error('GitHub authentication service is not configured for this deployment.') }
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('GitHub authentication service must use HTTPS.')
-  url.pathname = '/exchange'; url.search = ''; url.hash = ''
+  url.pathname = path; url.search = ''; url.hash = ''
   let response: Response
   try {
-    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, verifier }), signal })
+    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal })
   } catch (e) {
     if (signal?.aborted) throw e
     throw new Error('Could not reach the GitHub authentication service. Check your connection and try again.')
   }
   if (!response.ok) throw new Error('GitHub sign-in could not be completed. Check the authentication service configuration and try again.')
-  const result = await response.json() as { access_token?: unknown }
+  return response.json() as Promise<Record<string, unknown>>
+}
+
+export async function exchangeGitHubCode(workerUrl: string, code: string, verifier: string, signal?: AbortSignal) {
+  const result = await authRequest(workerUrl, '/exchange', { code, verifier }, signal)
   if (typeof result.access_token !== 'string' || !result.access_token) throw new Error('GitHub did not return a valid access token.')
   return result.access_token
+}
+
+export interface DeviceAuthorization {
+  device_code: string
+  user_code: string
+  verification_uri: string
+  expires_in: number
+  interval: number
+}
+
+export async function requestDeviceAuthorization(workerUrl: string, signal: AbortSignal): Promise<DeviceAuthorization> {
+  const result = await authRequest(workerUrl, '/device-code', {}, signal)
+  if (typeof result.device_code !== 'string' || typeof result.user_code !== 'string' ||
+    result.verification_uri !== 'https://github.com/login/device' || typeof result.expires_in !== 'number' ||
+    !Number.isFinite(result.expires_in) || result.expires_in <= 0 ||
+    typeof result.interval !== 'number' || !Number.isFinite(result.interval) || result.interval <= 0) {
+    throw new Error('GitHub did not return a valid device authorization code.')
+  }
+  return result as unknown as DeviceAuthorization
+}
+
+export async function pollDeviceAuthorization(workerUrl: string, authorization: DeviceAuthorization, signal: AbortSignal) {
+  let interval = Math.max(authorization.interval, 1)
+  const expiresAt = Date.now() + authorization.expires_in * 1000
+  while (Date.now() < expiresAt) {
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) { reject(new DOMException('Authorization cancelled.', 'AbortError')); return }
+      const timer = globalThis.setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, interval * 1000)
+      const abort = () => { globalThis.clearTimeout(timer); reject(new DOMException('Authorization cancelled.', 'AbortError')) }
+      signal.addEventListener('abort', abort, { once: true })
+    })
+    if (Date.now() >= expiresAt) break
+    const result = await authRequest(workerUrl, '/device-token', { device_code: authorization.device_code }, signal)
+    if (typeof result.access_token === 'string' && result.access_token) return result.access_token
+    if (result.error === 'authorization_pending') continue
+    if (result.error === 'slow_down') { interval += 5; continue }
+    if (result.error === 'access_denied') throw new Error('GitHub authorization was denied.')
+    if (result.error === 'expired_token') break
+    throw new Error('GitHub authorization could not be completed.')
+  }
+  throw new Error('The GitHub authorization code expired. Start again.')
 }

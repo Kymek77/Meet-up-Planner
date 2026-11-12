@@ -117,9 +117,9 @@ Show the current planning period, friend count, confirmed count, tentative/await
 Use the GitHub App created for this planner. GitHub Pages uses GitHub App web authorization with PKCE and a Cloudflare Worker for the token exchange:
 
 1. The user installs the app and grants it access, then starts **Connect GitHub** in planner Settings.
-2. The user authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. Only the Worker holds the client secret.
+2. The user authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
 3. The user token remains in memory only; it is cleared on reload/sign-out and the user reconnects in each browser session. Never put an app client secret or private key in frontend code or build variables.
-4. Request **Contents: Read and write**. Request **Repository creation: Read and write** only if the app should create the private data repository. Disable webhooks and configure the deployed planner URL as the homepage and exact callback URL.
+4. Request **Contents: Read and write**. Request **Repository creation: Read and write** only if the app should create the private data repository. Enable Device Flow, disable webhooks and configure the deployed planner URL as the homepage and exact callback URL.
 5. On successful sign-in, create or connect a private `meet-up-planner-data` repository and initialize `data/meetup-planner.json`. If creation is not permitted, instruct the user to create a private repository manually and grant the app access.
 6. Repository settings are owner, private repository name, branch (default `main`), and file path (default `data/meetup-planner.json`). Keep settings and the most recently synced blob SHA locally.
 7. Use GitHub Contents API reads and writes. Include the current blob SHA on updates; detect 409/conflict conditions and never silently overwrite. Before replacing a version, download a dated backup and let the user choose local or cloud data. Automatic record merging is not required.
