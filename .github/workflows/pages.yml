@@ -30,6 +30,7 @@ jobs:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
           VITE_GITHUB_APP_CLIENT_ID: ${{ vars.MEETUP_APP_CLIENT_ID }}
           VITE_GITHUB_APP_SLUG: ${{ vars.MEETUP_APP_SLUG }}
+          VITE_GITHUB_AUTH_URL: ${{ vars.MEETUP_AUTH_URL }}
       - uses: actions/configure-pages@v5.0.0
         with:
           enablement: true

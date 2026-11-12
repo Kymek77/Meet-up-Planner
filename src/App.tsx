@@ -3,7 +3,8 @@ import { addHours, format, parseISO } from 'date-fns'
 import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
 import { usePlanner } from './store'
-import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, pollDeviceAuthorization, readCloud, requestDeviceAuthorization, writeCloud, type DeviceAuthorization } from './sync'
+import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, readCloud, writeCloud } from './sync'
+import { beginGitHubAuthorization, exchangeGitHubCode, takeGitHubCallback } from './auth'
 import Calendar from './Calendar'
 import './sync.css'
 
@@ -51,7 +52,10 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 
 function App() {
   const { data, ready, error, load, save } = usePlanner()
-  const [page, setPage] = useState<Page>('overview')
+  const [page, setPage] = useState<Page>(() => {
+    const query = new URLSearchParams(window.location.search)
+    return query.has('state') && (query.has('code') || query.has('error')) ? 'settings' : 'overview'
+  })
   const [periodId, setPeriodId] = useState('')
   const [dialog, setDialog] = useState<Dialog>(null)
   const [formError, setFormError] = useState('')
@@ -208,9 +212,10 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const [token, setToken] = useState('')
   const clientId = import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? ''
   const appSlug = import.meta.env.VITE_GITHUB_APP_SLUG?.trim() ?? ''
-  const [deviceAuthorization, setDeviceAuthorization] = useState<DeviceAuthorization | null>(null)
+  const workerUrl = import.meta.env.VITE_GITHUB_AUTH_URL?.trim() ?? ''
   const [authenticating, setAuthenticating] = useState(false)
   const authController = useRef<AbortController | null>(null)
+  const callbackHandled = useRef(false)
   const [owner, setOwner] = useState(localStorage.getItem('meetup-owner') ?? '')
   const [repo, setRepo] = useState(localStorage.getItem('meetup-repo') ?? 'meet-up-planner-data')
   const [branch, setBranch] = useState(localStorage.getItem('meetup-branch') ?? 'main')
@@ -221,17 +226,23 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const syncedData = useRef('')
   const syncing = useRef(false)
   const retryDelay = useRef(5000)
-  useEffect(() => () => authController.current?.abort(), [])
   const signIn = async () => {
-    if (!clientId) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
+    if (!clientId || !workerUrl) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
+    setBusy(true); setAuthenticating(true); setMessage('')
+    try {
+      const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
+      window.location.assign(await beginGitHubAuthorization(clientId, callbackUrl))
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'GitHub sign-in failed.')
+      setBusy(false); setAuthenticating(false)
+    }
+  }
+  const completeSignIn = async (code: string, verifier: string) => {
     const controller = new AbortController()
     authController.current = controller
-    setBusy(true); setAuthenticating(true); setMessage(''); setConflict(null); setDeviceAuthorization(null)
+    setBusy(true); setAuthenticating(true); setMessage(''); setConflict(null)
     try {
-      const authorization = await requestDeviceAuthorization(clientId, controller.signal)
-      setDeviceAuthorization(authorization)
-      setMessage('Enter the one-time code on GitHub to authorize this app.')
-      const accessToken = await pollDeviceAuthorization(clientId, authorization, controller.signal)
+      const accessToken = await exchangeGitHubCode(workerUrl, code, verifier, controller.signal)
       const user = await getAuthenticatedUser(accessToken, controller.signal)
       if (controller.signal.aborted) return
       const repositoryName = repo.trim() || 'meet-up-planner-data'
@@ -280,9 +291,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       localStorage.setItem('meetup-branch', repository.branch)
       localStorage.setItem('meetup-path', syncTarget.path)
       if (!foundConflict) onSyncStatus(navigator.onLine ? 'Synced with GitHub' : 'Offline · Changes are saved locally and queued to sync.')
-      setDeviceAuthorization(null)
     } catch (e) {
-      setDeviceAuthorization(null)
       setMessage(e instanceof Error && e.name === 'AbortError' ? 'GitHub sign-in cancelled.' : e instanceof Error ? e.message : 'GitHub sign-in failed.')
     } finally {
       if (authController.current === controller) authController.current = null
@@ -292,11 +301,19 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const signOut = () => {
     authController.current?.abort()
     authController.current = null
-    setToken(''); setConflict(null); setDeviceAuthorization(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
+    setToken(''); setConflict(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
     onSyncStatus('GitHub sync is paused. Your planner remains saved on this device.')
   }
   const target = useCallback(() => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() }), [owner, repo, branch, path])
   const shaKey = useCallback((remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`, [target])
+  useEffect(() => {
+    if (callbackHandled.current) return
+    callbackHandled.current = true
+    try {
+      const callback = takeGitHubCallback(new URL(window.location.href))
+      if (callback) void completeSignIn(callback.code, callback.verifier)
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'GitHub sign-in failed.') }
+  })
   const rememberTarget = useCallback(() => {
     localStorage.setItem('meetup-owner', owner.trim()); localStorage.setItem('meetup-repo', repo.trim()); localStorage.setItem('meetup-branch', branch.trim()); localStorage.setItem('meetup-path', path.trim())
   }, [owner, repo, branch, path])
@@ -462,12 +479,11 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     return () => window.clearTimeout(timer)
   }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
   return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
-    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Install the Meet-up Planner GitHub App on your account, then sign in and we’ll create or connect a private data repository for you. The access token stays in memory and is cleared when you reload or sign out. Repository access is limited by the permissions you grant the GitHub App.</p>
+    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Install the GitHub App, then sign in to connect a private data repository. Choose all repositories to allow automatic creation, or create a private repository first and select only that repository. The access token stays in memory and is cleared when you reload or sign out.</p>
       <div className="form">
-        {!clientId && <p className="form-error" role="alert">GitHub App sign-in is not configured for this deployment. The site owner must set the VITE_GITHUB_APP_CLIENT_ID build variable.</p>}
+        {(!clientId || !workerUrl) && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must configure the GitHub App and authentication service.</p>}
         {appSlug ? <a className="button secondary" href={`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`} target="_blank" rel="noreferrer">Install GitHub App</a> : <p className="form-hint">Before connecting, install the GitHub App from its GitHub page and grant it access to the private planner repository.</p>}
-        {!token ? <div className="sync-actions"><button className="button" disabled={busy || !clientId} onClick={() => void signIn()}>{authenticating ? 'Waiting for GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
-        {deviceAuthorization && <div className="device-code" role="status"><p>Open <a href={deviceAuthorization.verification_uri} target="_blank" rel="noreferrer">GitHub device activation</a> and enter this code:</p><strong>{deviceAuthorization.user_code}</strong><p>Code expires in about {Math.ceil(deviceAuthorization.expires_in / 60)} minutes. Keep this page open while authorizing.</p></div>}
+        {!token ? <div className="sync-actions"><button className="button" disabled={busy || !clientId || !workerUrl} onClick={() => void signIn()}>{authenticating ? 'Connecting to GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
         <label>Private data repository<input value={repo} disabled={Boolean(token)} onChange={e => { setRepo(e.target.value); localStorage.setItem('meetup-repo', e.target.value) }} placeholder="meet-up-planner-data" /></label>
         <details className="advanced-sync"><summary>Advanced repository settings</summary><div className="form"><label>Branch<input value={branch} disabled={Boolean(token)} onChange={e => { setBranch(e.target.value); localStorage.setItem('meetup-branch', e.target.value) }} /></label><label>Planner file path<input value={path} disabled={Boolean(token)} onChange={e => { setPath(e.target.value); localStorage.setItem('meetup-path', e.target.value) }} /></label></div></details>
         {token && <div className="sync-actions"><button className="button" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('push')}><ArrowUpFromLine size={16} /> Push now</button><button className="button secondary" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('pull')}><ArrowDownToLine size={16} /> Pull from GitHub</button></div>}
