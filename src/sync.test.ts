@@ -35,6 +35,15 @@ describe('GitHub sync', () => {
     expect(body.branch).toBe('main')
     expect(JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(body.content), c => c.charCodeAt(0))))).toEqual(data)
   })
+  it('initializes the planner file without a SHA when creating it', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ content: { sha: 'created' } }))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(writeCloud('example', target, emptyData())).resolves.toBe('created')
+    const body = JSON.parse(fetch.mock.calls[2][1].body)
+    expect(body).not.toHaveProperty('sha')
+    expect(body.branch).toBe('main')
+  })
   it('reads and validates the remote copy', async () => {
     const data = emptyData(), content = btoa(JSON.stringify(data))
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok({ login: 'me' })).mockResolvedValueOnce(ok({ private: true, owner: { login: 'me' } })).mockResolvedValueOnce(ok({ sha: 'abc', encoding: 'base64', content })))

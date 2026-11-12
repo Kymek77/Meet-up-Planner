@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { addHours, format, parseISO } from 'date-fns'
 import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
@@ -247,17 +247,18 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       } else {
         const knownSha = localStorage.getItem(key)
         const localEmpty = !data.friends.length && !data.periods.length && !data.availability.length && !data.meetings.length
-        if (!knownSha && localEmpty) {
+        const remoteEmpty = !remote.data.friends.length && !remote.data.periods.length && !remote.data.availability.length && !remote.data.meetings.length
+        if (knownSha && knownSha !== remote.sha) {
+          setConflict(remote)
+          foundConflict = true
+          setMessage('The cloud copy changed since your last sync. Choose which version to keep.')
+          onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')
+        } else if (localEmpty && !remoteEmpty) {
           await save(remote.data)
           if (usePlanner.getState().error) throw new Error('The cloud copy could not be saved locally.')
           localStorage.setItem(key, remote.sha)
           syncedData.current = JSON.stringify(remote.data)
           setMessage('Your existing planner was loaded from GitHub.')
-        } else if (knownSha && knownSha !== remote.sha) {
-          setConflict(remote)
-          foundConflict = true
-          setMessage('The cloud copy changed since your last sync. Choose which version to keep.')
-          onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')
         } else if (!knownSha && JSON.stringify(data) !== JSON.stringify(remote.data)) {
           setConflict(remote)
           foundConflict = true
@@ -290,20 +291,20 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const signOut = () => {
     authController.current?.abort()
     authController.current = null
-    setToken(''); setDeviceAuthorization(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
+    setToken(''); setConflict(null); setDeviceAuthorization(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
     onSyncStatus('GitHub sync is paused. Your planner remains saved on this device.')
   }
-  const target = () => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() })
-  const shaKey = (remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`
-  const rememberTarget = () => {
+  const target = useCallback(() => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() }), [owner, repo, branch, path])
+  const shaKey = useCallback((remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`, [target])
+  const rememberTarget = useCallback(() => {
     localStorage.setItem('meetup-owner', owner.trim()); localStorage.setItem('meetup-repo', repo.trim()); localStorage.setItem('meetup-branch', branch.trim()); localStorage.setItem('meetup-path', path.trim())
-  }
-  const showLatestConflict = async (syncTarget: ReturnType<typeof target>) => {
+  }, [owner, repo, branch, path])
+  const showLatestConflict = useCallback(async (syncTarget: ReturnType<typeof target>) => {
     const remote = await readCloud(token, syncTarget)
     if (!remote) throw new Error('The cloud copy could not be found. It may have been deleted.')
     setConflict(remote)
     setMessage('The cloud copy changed since your last sync. Choose which version to keep.')
-  }
+  }, [token])
   const sync = async (direction: 'pull' | 'push') => {
     if (!token || !owner || !repo) { setMessage('Enter your GitHub token, username and private repository.'); return }
     if (direction === 'pull' && !window.confirm('Replace all local planner data with the cloud copy? A dated backup will be downloaded first.')) return
@@ -318,6 +319,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
         const knownSha = localStorage.getItem(key)
         if (knownSha && remote.sha !== knownSha) {
           setConflict(remote)
+          onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')
           setMessage('The cloud copy changed since your last sync. Choose which version to keep.')
           return
         }
@@ -375,7 +377,10 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
       setConflict(null)
     } catch (e) {
       if (e instanceof CloudConflictError) {
-        try { await showLatestConflict(syncTarget) }
+        try {
+          await showLatestConflict(syncTarget)
+          onSyncStatus('Sync conflict · Choose which planner version to keep in Settings.')
+        }
         catch (readError) { setMessage(readError instanceof Error ? readError.message : 'Could not load the latest cloud copy.') }
       } else setMessage(e instanceof Error ? e.message : 'Could not resolve the sync conflict.')
     } finally { setBusy(false) }
@@ -436,17 +441,17 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     onSyncStatus('Saved locally · Syncing shortly…')
     timer = window.setTimeout(() => void attemptSync(), 2000)
     return () => window.clearTimeout(timer)
-  }, [data, token, owner, repo, branch, path, online, conflict])
+  }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
   return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
     <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Sign in and we’ll create or connect a private data repository for you. Your access token stays in memory and is cleared when you reload or sign out. GitHub grants this OAuth app the <code>repo</code> scope.</p>
       <div className="form">
         {!clientId && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must set the VITE_GITHUB_CLIENT_ID build variable.</p>}
-        {!token ? <div className="sync-actions"><button className="button" disabled={busy || !clientId} onClick={() => void signIn()}>{authenticating ? 'Waiting for GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
+        {!token ? <div className="sync-actions"><button className="button" disabled={busy || !clientId} onClick={() => void signIn()}>{authenticating ? 'Waiting for GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
         {deviceAuthorization && <div className="device-code" role="status"><p>Open <a href={deviceAuthorization.verification_uri} target="_blank" rel="noreferrer">GitHub device activation</a> and enter this code:</p><strong>{deviceAuthorization.user_code}</strong><p>Code expires in about {Math.ceil(deviceAuthorization.expires_in / 60)} minutes. Keep this page open while authorizing.</p></div>}
         <label>Private data repository<input value={repo} disabled={Boolean(token)} onChange={e => { setRepo(e.target.value); localStorage.setItem('meetup-repo', e.target.value) }} placeholder="meet-up-planner-data" /></label>
         <details className="advanced-sync"><summary>Advanced repository settings</summary><div className="form"><label>Branch<input value={branch} disabled={Boolean(token)} onChange={e => { setBranch(e.target.value); localStorage.setItem('meetup-branch', e.target.value) }} /></label><label>Planner file path<input value={path} disabled={Boolean(token)} onChange={e => { setPath(e.target.value); localStorage.setItem('meetup-path', e.target.value) }} /></label></div></details>
-        {token && <div className="sync-actions"><button className="button" disabled={busy || !online} onClick={() => void sync('push')}><ArrowUpFromLine size={16} /> Push now</button><button className="button secondary" disabled={busy || !online} onClick={() => void sync('pull')}><ArrowDownToLine size={16} /> Pull from GitHub</button></div>}
-        {conflict && <div className="sync-conflict" role="region" aria-labelledby="sync-conflict-title"><h3 id="sync-conflict-title">Two versions of your planner</h3><p>This cloud copy was updated elsewhere. Choose one version to keep; records are not automatically merged.</p><div className="conflict-summary"><div><strong>This device</strong><span>{data.friends.length} friends · {data.periods.length} periods · {data.meetings.length} plans</span></div><div><strong>GitHub</strong><span>{conflict.data.friends.length} friends · {conflict.data.periods.length} periods · {conflict.data.meetings.length} plans</span></div></div><div className="sync-actions"><button className="button secondary" disabled={busy} onClick={() => void resolveConflict('cloud')}>Use cloud copy</button><button className="button" disabled={busy} onClick={() => void resolveConflict('local')}>Keep this device and overwrite cloud</button></div></div>}
+        {token && <div className="sync-actions"><button className="button" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('push')}><ArrowUpFromLine size={16} /> Push now</button><button className="button secondary" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('pull')}><ArrowDownToLine size={16} /> Pull from GitHub</button></div>}
+        {conflict && <div className="sync-conflict" role="region" aria-labelledby="sync-conflict-title"><h3 id="sync-conflict-title">Two versions of your planner</h3><p>This cloud copy was updated elsewhere. Choose one version to keep; records are not automatically merged.</p><div className="conflict-summary"><div><strong>This device</strong><span>{data.friends.length} friends · {data.periods.length} periods · {data.meetings.length} plans</span></div><div><strong>GitHub</strong><span>{conflict.data.friends.length} friends · {conflict.data.periods.length} periods · {conflict.data.meetings.length} plans</span></div></div><div className="sync-actions"><button className="button secondary" disabled={busy || !token} onClick={() => void resolveConflict('cloud')}>Use cloud copy</button><button className="button" disabled={busy || !token} onClick={() => void resolveConflict('local')}>Keep this device and overwrite cloud</button></div></div>}
         {message && <p role="status" className="sync-message">{message}</p>}<p className="form-hint">Changes save locally immediately, then sync automatically after a short pause. Offline changes stay queued on this device and sync after reconnecting. Conflicts never overwrite data silently; replacing either copy downloads a dated backup first.</p>
       </div>
     </section>
