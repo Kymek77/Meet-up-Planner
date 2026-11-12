@@ -1,4 +1,4 @@
-import { areIntervalsOverlapping, differenceInMinutes, isValid, parseISO } from 'date-fns'
+import { areIntervalsOverlapping, differenceInCalendarDays, differenceInMinutes, format, isValid, parseISO } from 'date-fns'
 import { z } from 'zod'
 
 export type Priority = 'must-see' | 'high' | 'normal' | 'low'
@@ -36,6 +36,29 @@ export interface PlannerData {
   meetings: Meeting[]
 }
 export const emptyData = (): PlannerData => ({ version: 1, friends: [], periods: [], availability: [], meetings: [] })
+
+export function getDashboardHighlights(meetings: Meeting[], friends: Friend[], now = new Date()) {
+  const today = format(now, 'yyyy-MM-dd')
+  const validMeetings = meetings.flatMap(meeting => {
+    const start = parseISO(meeting.start)
+    return isValid(start) ? [{ meeting, start }] : []
+  })
+  const staleContacts = friends.flatMap(friend => {
+    if (friend.archived || !friend.lastContacted) return []
+    const lastContacted = parseISO(friend.lastContacted)
+    if (!isValid(lastContacted)) return []
+    const daysSinceContact = differenceInCalendarDays(now, lastContacted)
+    return daysSinceContact >= 30 ? [{ friend, daysSinceContact }] : []
+  }).sort((a, b) => b.daysSinceContact - a.daysSinceContact)
+
+  return {
+    today: validMeetings.filter(({ meeting, start }) => format(start, 'yyyy-MM-dd') === today && meeting.status !== 'cancelled')
+      .sort((a, b) => a.start.getTime() - b.start.getTime()).map(({ meeting }) => meeting),
+    nextConfirmed: validMeetings.filter(({ meeting, start }) => meeting.status === 'confirmed' && start >= now)
+      .sort((a, b) => a.start.getTime() - b.start.getTime())[0]?.meeting ?? null,
+    staleContacts,
+  }
+}
 
 export function validRange(start: string, end: string) {
   const a = parseISO(start), b = parseISO(end)
