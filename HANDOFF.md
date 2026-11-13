@@ -6,11 +6,9 @@ Treat the product requirements below as the continuing baseline for all future w
 
 ## Domain migration
 
-The owner has purchased `meetup-planner.com` through Cloudflare. Migration to same-origin Worker hosting and an optional persistent-session sync mode is being prepared; do not assume the new deployment is live. Keep the existing GitHub-only sync mode available without a subscription. Before the origin changes, export local planner data from each device and keep the old site available until the new site is verified. Browser storage does not move between origins.
+The owner confirmed `https://meetup-planner.com/` is live on Cloudflare Workers, currently deploying from `copilot/worker-connected-sync`. After merging this work, change the Worker's production branch back to `main` and verify the next deployment. Keep GitHub-only sync available without a subscription. Browser storage does not move between origins; keep the old Pages site available for users to export their data.
 
-The owner confirmed the domain is active, added its GitHub App callback and saved the new Worker session variables and build configuration. The new Worker build and custom-domain attachment still require verification.
-
-The owner attached the domain, enabled GitHub Device Flow and installed the app on the private repository. Connected device-code sign-in and session restoration succeeded; a fresh build is needed after correcting Vite build variables. Web sign-in and cross-device reconciliation remain to be verified.
+The owner confirmed connected web and device-code sign-in survive refresh, changes sync between two devices in both directions, and offline edits sync after reconnecting. Direct mode's sign-in button is available; a full direct-mode sign-in and simultaneous offline edits on both devices still need live verification. The owner created and installed the GitHub App on a private repository manually.
 
 ## Product purpose
 
@@ -207,7 +205,7 @@ Cloudflare's first build failed with **root directory not found** because the `w
 
 The GitHub installation page may require selecting an existing repository when choosing selected repositories. All-repository access is broader; GitHub controls this choice. Repository creation also depends on GitHub permissions, and a 404 can mean an existing repository is inaccessible. In direct mode the Worker handles sign-in and sync calls GitHub directly; connected mode also proxies sync. The Worker Free plan has request limits, including device-flow polling, and its origin check alone does not prevent abuse.
 
-Historical validation of the redirect fix: lint passed, all 28 tests passed, and the production build passed. The owner subsequently reported that live login and setup work. The new domain and connected-session flow still require separate live verification after deployment.
+Historical validation of the redirect fix: lint passed, all 28 tests passed, and the production build passed. See the domain migration section for the current live verification status.
 
 ## Known GitHub sync behavior
 
