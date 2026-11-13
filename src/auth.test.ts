@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { beginGitHubAuthorization, beginGitHubInstallation, canReturnFromInstallation, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback, takeGitHubInstallationCallback } from './auth'
+import { beginGitHubAuthorization, beginGitHubInstallation, canReturnFromInstallation, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, resetInstallationAttempt, shouldAutomaticallyInstall, takeGitHubCallback, takeGitHubInstallationCallback } from './auth'
 import worker from '../worker/index'
 
 const origin = 'https://planner.example'
@@ -21,10 +21,15 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(
 
 describe('GitHub web authorization', () => {
   it('continues only a matching, unexpired installation return and removes its parameters', () => {
+    expect(shouldAutomaticallyInstall(true)).toBe(true)
+    expect(shouldAutomaticallyInstall(false)).toBe(false)
     const url = new URL(beginGitHubInstallation('planner'))
     expect(url.origin + url.pathname).toBe('https://github.com/apps/planner/installations/new')
     const state = url.searchParams.get('state')
     expect(takeGitHubInstallationCallback(new URL(`${callback}?installation_id=123&setup_action=install&state=${state}`))).toBe(true)
+    expect(shouldAutomaticallyInstall(true)).toBe(false)
+    resetInstallationAttempt()
+    expect(shouldAutomaticallyInstall(true)).toBe(true)
     expect(history.replaceState).toHaveBeenCalledWith(null, '', callback)
     expect(() => takeGitHubInstallationCallback(new URL(`${callback}?installation_id=123&state=${state}`))).toThrow('could not be verified')
     beginGitHubInstallation('planner')
