@@ -1,8 +1,39 @@
 const AUTH_KEY = 'meetup-github-auth'
+const INSTALL_KEY = 'meetup-github-install'
 
 function randomString() {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+export function beginGitHubInstallation(appSlug: string) {
+  if (!appSlug) throw new Error('GitHub connection is not configured for this site.')
+  const state = randomString()
+  sessionStorage.setItem(INSTALL_KEY, JSON.stringify({ state, created: Date.now() }))
+  const url = new URL(`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`)
+  url.searchParams.set('state', state)
+  return url.href
+}
+
+export function takeGitHubInstallationCallback(url: URL) {
+  if (!url.searchParams.has('installation_id') && !url.searchParams.has('setup_action')) return false
+  const stored = sessionStorage.getItem(INSTALL_KEY)
+  sessionStorage.removeItem(INSTALL_KEY)
+  const state = url.searchParams.get('state')
+  for (const key of ['state', 'installation_id', 'setup_action']) url.searchParams.delete(key)
+  history.replaceState(null, '', url.href)
+  let pending: { state?: unknown; created?: unknown }
+  try { pending = JSON.parse(stored ?? 'null') } catch { throw new Error('This connection attempt could not be verified. Please try again.') }
+  if (!pending || typeof pending.state !== 'string' || state !== pending.state ||
+    typeof pending.created !== 'number' || pending.created > Date.now() || Date.now() - pending.created > 30 * 60 * 1000) {
+    throw new Error('This connection attempt expired or could not be verified. Please try again on the same device and browser.')
+  }
+  return true
+}
+
+export function canReturnFromInstallation(setupUrl: string, callbackUrl: string) {
+  if (!setupUrl) return false
+  try { return new URL(setupUrl).href === new URL(callbackUrl).href } catch { return false }
 }
 
 export async function beginGitHubAuthorization(clientId: string, callbackUrl: string) {

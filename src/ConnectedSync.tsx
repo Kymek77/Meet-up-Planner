@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Cloud } from 'lucide-react'
-import { beginGitHubAuthorization, takeGitHubCallback, type DeviceAuthorization } from './auth'
-import { ConnectedGitHubError, logoutConnected, reconcile, resetRemoteCache, resolveConnectedConflict, sessionRequest, setupRepository, type Conflict, type Target } from './connected'
+import { beginGitHubAuthorization, beginGitHubInstallation, canReturnFromInstallation, takeGitHubCallback, type DeviceAuthorization } from './auth'
+import { ConnectedGitHubError, logoutConnected, MissingInstallationError, reconcile, resetRemoteCache, resolveConnectedConflict, sessionRequest, setupRepository, type Conflict, type Target } from './connected'
 import { createSessionRestorer } from './connected-session'
 import { withSyncLock } from './store'
 import type { PlannerData } from './model'
@@ -9,6 +9,8 @@ import type { PlannerData } from './model'
 export default function ConnectedSync({ data, online, onSyncStatus, backup }: { data: PlannerData; online: boolean; onSyncStatus: (status: string) => void; backup: (data: PlannerData, label: string) => void }) {
   const clientId = import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? ''
   const slug = import.meta.env.VITE_GITHUB_APP_SLUG?.trim() ?? ''
+  const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
+  const installationReturnsHere = canReturnFromInstallation(import.meta.env.VITE_GITHUB_APP_SETUP_URL?.trim() ?? '', callbackUrl)
   const [repo, setRepo] = useState(localStorage.getItem('meetup-connected-repo') ?? 'meet-up-planner-data')
   const [path, setPath] = useState(localStorage.getItem('meetup-connected-path') ?? 'data/meetup-planner.json')
   const [branch, setBranch] = useState(localStorage.getItem('meetup-connected-branch') ?? '')
@@ -19,6 +21,8 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
   const [message, setMessage] = useState('')
   const [conflict, setConflict] = useState<Conflict | null>(null)
   const [device, setDevice] = useState<DeviceAuthorization | null>(null)
+  const [needsInstallation, setNeedsInstallation] = useState(false)
+  const [installationFromDevice, setInstallationFromDevice] = useState(false)
   const active = useRef(true)
   const controller = useRef<AbortController | null>(null)
   const running = useRef(false)
@@ -51,6 +55,8 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
     setBranch(resolvedBranch)
     resetRemoteCache()
     setTarget({ owner: info.owner, repo: repository, branch: resolvedBranch, path: file })
+    localStorage.setItem('meetup-connected-installed', 'yes')
+    setNeedsInstallation(false)
     setMessage('')
   }, [])
 
@@ -149,6 +155,14 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
       } catch (e) {
         if (valid()) {
           if (expireSession(e)) return
+          if (e instanceof MissingInstallationError) {
+            restoreNeeded.current = false
+            clearRetry()
+            setNeedsInstallation(true)
+            setMessage(e.message)
+            onSyncStatus('Finish connecting GitHub in Settings.')
+            return
+          }
           setMessage(e instanceof Error ? e.message : 'Could not restore connected session.')
           onSyncStatus('Connected session unavailable · Your changes remain saved locally. Retrying automatically.')
           scheduleRetry(e, () => void attempt())
@@ -187,14 +201,18 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
     return () => { window.removeEventListener('online', reconnect); window.removeEventListener('focus', trigger); document.removeEventListener('visibilitychange', trigger); clearInterval(timer) }
   }, [target, run])
 
-  const signIn = async () => {
+  const signIn = async (alreadyInstalled = false) => {
     setMessage('')
     try {
-      const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
-      window.location.assign(await beginGitHubAuthorization(clientId, callbackUrl))
+      if (installationReturnsHere && !alreadyInstalled && !localStorage.getItem('meetup-connected-installed')) {
+        window.location.assign(beginGitHubInstallation(slug))
+      } else {
+        window.location.assign(await beginGitHubAuthorization(clientId, callbackUrl))
+      }
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Sign-in failed.') }
   }
   const deviceSignIn = async () => {
+    setInstallationFromDevice(true)
     restoreNeeded.current = false; clearRetry()
     const auth = new AbortController(); controller.current = auth
     setBusy(true); setMessage('')
@@ -224,6 +242,7 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
       }
       throw new Error('The GitHub authorization code expired. Start again.')
     } catch (e) {
+      if (e instanceof MissingInstallationError) setNeedsInstallation(true)
       if (active.current && !expireSession(e)) setMessage(e instanceof Error && e.name === 'AbortError' ? 'Sign-in cancelled.' : e instanceof Error ? e.message : 'Sign-in failed.')
     } finally { if (active.current) { setBusy(false); setDevice(null) } }
   }
@@ -235,14 +254,14 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
     try {
       await logoutConnected()
       if (!active.current) return
-      setAuthenticated(false); setTarget(null); setConflict(null); conflictRef.current = null
+      setAuthenticated(false); setTarget(null); setConflict(null); setNeedsInstallation(false); setInstallationFromDevice(false); conflictRef.current = null
       setMessage('Signed out. Your planner remains on this device.')
       onSyncStatus('Connected sync is paused.')
     } catch (e) { if (active.current) setMessage(e instanceof Error ? e.message : 'Sign-out failed.') }
     finally { if (active.current) setBusy(false) }
   }
   const resolve = async (choice: 'local' | 'cloud') => {
-    if (!target || !conflict || !window.confirm(choice === 'cloud' ? 'Replace local data with the cloud copy? A backup will be downloaded first.' : 'Replace the cloud copy with this device? A backup will be downloaded first.')) return
+    if (!target || !conflict || !window.confirm(choice === 'cloud' ? 'Replace the planner on this device with the GitHub copy?' : 'Replace the GitHub copy with the planner on this device?')) return
     setBusy(true)
     try {
       await resolveConnectedConflict(target, conflict, choice, backup, () => active.current && localStorage.getItem('meetup-sync-mode') === 'connected')
@@ -252,16 +271,18 @@ export default function ConnectedSync({ data, online, onSyncStatus, backup }: { 
     } catch (e) { if (active.current && !expireSession(e)) setMessage(e instanceof Error ? e.message : 'Could not resolve conflict.') }
     finally { if (active.current) setBusy(false) }
   }
-  return <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>Connected GitHub sync</h2>
-    <p>A secure Worker session keeps you signed in across reloads. Data remains local first and syncs to your private GitHub repository.</p>
+  return <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>Save and sync</h2>
+    <p>Your planner is saved on this device. Connect GitHub to keep a private copy and use it on your other devices. GitHub will ask you to approve access. Choose only the planner repository if possible; access to all repositories also includes your other repositories.</p>
     <div className="form">
-      {!authenticated && <div className="sync-actions"><button className="button" disabled={busy || restoring || !clientId} onClick={() => void signIn()}>Connect GitHub</button><button className="button secondary" disabled={busy || restoring} onClick={() => void deviceSignIn()}>Use device code instead</button>{busy && <button className="button secondary" onClick={() => controller.current?.abort()}>Cancel sign in</button>}</div>}
+      {(!clientId || !slug) && <p className="form-error" role="alert">GitHub connection is not configured for this site. Please contact the site owner.</p>}
+      {!authenticated && !restoring && <p role="status" className="form-hint">Not connected · Your planner stays on this device.</p>}
+      {restoring && <p role="status" className="form-hint">Connecting your planner…</p>}
+      {!authenticated && <div className="sync-actions"><button className="button" disabled={busy || restoring || !clientId || !slug} onClick={() => void signIn()}>Connect GitHub</button>{busy && <button className="button secondary" onClick={() => controller.current?.abort()}>Cancel sign in</button>}</div>}
       {device && <div className="device-code" role="status"><p>Open <a href={device.verification_uri} target="_blank" rel="noreferrer">GitHub device activation</a> and enter:</p><strong>{device.user_code}</strong></div>}
-      <label>Private data repository<input value={repo} disabled={authenticated || busy || restoring} onChange={e => setRepo(e.target.value)} /></label>
-      <details className="advanced-sync"><summary>Advanced repository settings</summary><div className="form"><label>Branch (leave blank for repository default)<input value={branch} disabled={authenticated || busy || restoring} onChange={e => setBranch(e.target.value)} /></label><label>Planner file path<input value={path} disabled={authenticated || busy || restoring} onChange={e => setPath(e.target.value)} /></label></div></details>
+      <details className="advanced-sync"><summary>Advanced connection settings</summary><div className="form"><p className="form-hint">This connection stays signed in after a refresh and checks GitHub for changes while the planner is open.</p>{!authenticated && <div className="sync-actions"><button className="button secondary" disabled={busy || restoring} onClick={() => void deviceSignIn()}>Connect with a device code</button>{installationReturnsHere && <button className="button secondary" disabled={busy || restoring} onClick={() => void signIn(true)}>Already added on GitHub? Sign in</button>}</div>}<label>Private repository<input value={repo} disabled={authenticated || busy || restoring} onChange={e => setRepo(e.target.value)} /></label><label>Branch (leave blank for repository default)<input value={branch} disabled={authenticated || busy || restoring} onChange={e => setBranch(e.target.value)} /></label><label>Planner file path<input value={path} disabled={authenticated || busy || restoring} onChange={e => setPath(e.target.value)} /></label></div></details>
       {authenticated && <div className="sync-actions">{target && <p>Signed in as <strong>@{target.owner}</strong> · {target.repo}/{target.branch}</p>}<button className="button secondary" disabled={busy || !online || Boolean(conflict)} onClick={() => target ? void run() : void setup().catch(e => { if (!expireSession(e)) setMessage(e instanceof Error ? e.message : 'Setup failed.') })}>{target ? 'Sync now' : 'Retry setup'}</button><button className="button secondary" disabled={busy} onClick={() => void signOut()}>Sign out</button></div>}
-      {authenticated && !target && slug && <p><a href={`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`} target="_blank" rel="noreferrer">Install GitHub App</a>, then retry setup.</p>}
-      {conflict && <div className="sync-conflict" role="region" aria-label="Sync conflict"><h3>Two versions of your planner</h3><p>{conflict.reason} Choose a version to keep. A backup is downloaded before replacement.</p><div className="sync-actions">{conflict.remote && <button className="button secondary" disabled={busy || !online} onClick={() => void resolve('cloud')}>Use cloud copy</button>}<button className="button" disabled={busy || !online} onClick={() => void resolve('local')}>Keep this device and overwrite cloud</button><button className="button secondary" disabled={busy || !online} onClick={() => { conflictRef.current = null; setConflict(null); void run() }}>Check again</button></div></div>}
+      {authenticated && !target && needsInstallation && slug && <div className="sync-actions"><p>Choose only the planner repository if possible; choosing all repositories gives the app access to your other repositories too.</p>{installationReturnsHere && !installationFromDevice ? <button className="button" onClick={() => window.location.assign(beginGitHubInstallation(slug))}>Continue on GitHub</button> : <a className="button" href={`https://github.com/apps/${encodeURIComponent(slug)}/installations/new`} target="_blank" rel="noreferrer">Add Meet-up Planner on GitHub</a>}</div>}
+      {conflict && <div className="sync-conflict" role="region" aria-label="Sync conflict"><h3>Two versions of your planner</h3><p>These copies cannot be combined safely. Choose a version to keep; you can download a backup of the other first.</p><div className="sync-actions">{conflict.remote && <button className="button secondary" disabled={busy || !online} onClick={() => void resolve('cloud')}>Use GitHub copy</button>}<button className="button" disabled={busy || !online} onClick={() => void resolve('local')}>Keep this device's copy</button><button className="button secondary" disabled={busy || !online} onClick={() => { conflictRef.current = null; setConflict(null); void run() }}>Check again</button></div></div>}
       {message && <p role="alert" className="sync-message">{message}</p>}
     </div>
   </section>
