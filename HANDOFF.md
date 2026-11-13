@@ -4,9 +4,23 @@
 
 Treat the product requirements below as the continuing baseline for all future work on Meet-up Planner. Preserve existing behavior while implementing them, and do not narrow the product to the most recent GitHub sync change. GitHub sign-in uses a GitHub App and a Cloudflare Worker for the web authorization token exchange.
 
+## Settings and connection flow: merge handoff
+
+The settings redesign and installation-first connection flow have not yet been deployed. The change includes `src/App.tsx`, `src/ConnectedSync.tsx`, `src/auth.ts`, `src/connected.ts`, their tests, `README.md` and this handoff.
+
+- Settings now describe saving, syncing, planning preferences and backups in plainer language; advanced connection options remain available. Existing direct and connected modes and their saved selections are retained.
+- On the configured production origin, new connections start at GitHub App installation and continue automatically to PKCE authorization after a validated same-browser return. Existing installations have a sign-in option under advanced settings. The Pages fallback and device-code flow retain separate installation recovery where needed.
+- Replacing or deleting data asks for confirmation, then offers a backup download; cancelling the download prompt continues without downloading. Connected conflict resolution still keeps its on-device safety copy. A restore or deletion can sync to GitHub.
+
+The owner reports completing the README's GitHub App and Cloudflare configuration changes. This session could not independently verify those settings or reach the live domain. In particular, installation-first requires the App's setup URL and the public build variable `VITE_GITHUB_APP_SETUP_URL` to match `https://meetup-planner.com/`; see the README for the full configuration.
+
+Local validation passed: 87 tests, lint, production build and `git diff --check`. Browser checks covered the settings display, both backup-download choices, an invalid installation return and a 375px layout. The real GitHub installation/authorization journey has **not** been verified.
+
+After merging, confirm Cloudflare deploys the merged revision from the intended production branch. Then verify a new installation and an existing installation, both connection modes, repository creation or selection, denied permissions and cancellation, conflict/backups, offline recovery, the mobile device-code fallback and the Pages fallback. Use test data and preserve existing planner backups. Do not treat the configuration report or local tests as proof that the live flow works.
+
 ## Domain migration
 
-The owner confirmed `https://meetup-planner.com/` is live on Cloudflare Workers, currently deploying from `copilot/worker-connected-sync`. After merging this work, change the Worker's production branch back to `main` and verify the next deployment. Keep GitHub-only sync available without a subscription. Browser storage does not move between origins; keep the old Pages site available for users to export their data.
+The owner previously confirmed `https://meetup-planner.com/` is live on Cloudflare Workers and was deploying from `copilot/worker-connected-sync`; the current production branch has not been independently verified. Confirm it points to the intended merged branch, normally `main`, and verify the next deployment. Keep GitHub-only sync available without a subscription. Browser storage does not move between origins; keep the old Pages site available for users to export their data.
 
 The owner confirmed connected web and device-code sign-in survive refresh, changes sync between two devices in both directions, and offline edits sync after reconnecting. Direct mode's sign-in button is available; a full direct-mode sign-in and simultaneous offline edits on both devices still need live verification. The owner created and installed the GitHub App on a private repository manually.
 
@@ -122,13 +136,13 @@ Show the current planning period, friend count, confirmed count, tentative/await
 
 Use the GitHub App created for this planner. GitHub Pages uses GitHub App web authorization with PKCE and a Cloudflare Worker for the token exchange:
 
-1. The user starts **Connect GitHub** in planner Settings, authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
-2. If the app is not installed on their personal account, the planner offers GitHub's installation page; the user returns to the planner and selects **Continue after installation**.
+1. The user starts **Connect GitHub** in planner Settings. Where the configured GitHub setup URL matches this deployment, new users start with installation and automatically continue to authorization on return. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
+2. Sites whose URL differs from the GitHub App's single setup URL use authorization first and offer a separate installation link when needed. The installation ID in a redirect is untrusted; verify the installation belongs to the authenticated user. See README for the required GitHub App and build configuration.
 3. Direct GitHub mode keeps the user token in memory only; it is cleared on reload/sign-out. Connected mode uses an HttpOnly same-origin session cookie and stores encrypted tokens in a Worker Durable Object. Never put an app client secret, session encryption key, or private key in frontend code or build variables.
 4. Request **Contents: Read and write** and **Repository creation: Read and write** for automatic creation. Enable Device Flow, disable webhooks and configure the deployed planner URL as the homepage and exact callback URL. The site owner can deploy and configure the Worker through the Cloudflare browser dashboard as described in README.
 5. On successful sign-in, create or connect a private `meet-up-planner-data` repository and initialize `data/meetup-planner.json`. If creation is not permitted, instruct the user to create a private repository manually and grant the app access.
 6. Repository settings are owner, private repository name, branch, and file path (default `data/meetup-planner.json`). Keep settings and sync state locally.
-7. Use GitHub Contents API reads and writes. Include the current blob SHA on updates; detect conflicts and never silently overwrite. Connected mode merges independent record changes against a trusted baseline; incompatible edits and deletions require a choice. Direct mode retains its explicit whole-copy conflict flow. Before replacing a version, download a dated backup.
+7. Use GitHub Contents API reads and writes. Include the current blob SHA on updates; detect conflicts and never silently overwrite. Connected mode merges independent record changes against a trusted baseline; incompatible edits and deletions require a choice. Direct mode retains its explicit whole-copy conflict flow. Before replacing a version, offer a dated backup download rather than downloading without asking; connected mode also retains an on-device safety copy.
 8. Save locally first, debounce automatic sync (approximately 2–5 seconds), provide manual **Sync now**, show clear saved/syncing/synced/offline/failure status, and retain local data for retries during outages.
 9. Handle missing repositories, incorrect branches/paths, expired/revoked tokens, and insufficient permissions with actionable messages.
 
@@ -210,6 +224,6 @@ Historical validation of the redirect fix: lint passed, all 28 tests passed, and
 ## Known GitHub sync behavior
 
 - Direct GitHub sign-in is session-only; connected mode uses a persistent Worker session.
-- Direct mode conflicts require an explicit choice between local and cloud data. Connected mode can merge independent record changes against a trusted local baseline, but conflicting edits still require a choice.
+- Direct mode conflicts require an explicit choice between local and cloud data. Connected mode can merge independent record changes against a trusted local baseline, but conflicting edits still require a choice. Offer a backup download before replacing either copy.
 - Automatic private repository creation depends on the GitHub App's granted permissions; manual creation of a private repository is the fallback.
 - Remote JSON is validated before use. Never weaken validation or replace the local snapshot with unvalidated data.

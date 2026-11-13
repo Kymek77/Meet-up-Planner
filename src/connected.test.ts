@@ -6,17 +6,19 @@ const state = vi.hoisted(() => ({
   baseline: undefined as { id: string; data: PlannerData; sha: string } | undefined,
   identity: undefined as string | undefined,
   revision: 0,
+  backups: [] as PlannerData[],
 }))
 vi.mock('./store', () => ({
   withSyncLock: async (fn: () => Promise<unknown>) => fn(),
   readSyncState: async () => ({ ...state }),
+  saveSyncBackup: async (data: PlannerData) => { state.backups.push(structuredClone(data)) },
   commitSyncState: async (id: string, revision: number, data: PlannerData, sha: string) => {
     if (revision !== state.revision) return false
     state.data = structuredClone(data); state.baseline = { id, data: structuredClone(data), sha }; state.identity = id
     return true
   },
 }))
-import { ConnectedGitHubError, readRemote, reconcile, resetRemoteCache, sessionRequest, targetKey, type Target } from './connected'
+import { ConnectedGitHubError, MissingInstallationError, readRemote, reconcile, resetRemoteCache, resolveConnectedConflict, sessionRequest, setupRepository, targetKey, type Target } from './connected'
 
 const target: Target = { owner: 'alice', repo: 'planner', branch: 'main', path: 'data/planner.json' }
 const person = (id: string) => ({ id, name: id, colour: '#fff', priority: 'normal' as const, createdAt: '', updatedAt: '' })
@@ -30,7 +32,7 @@ let reads: { path: string; etag?: string }[] = []
 let force304 = false
 
 beforeEach(() => {
-  state.data = snapshot(); state.revision = 0; state.identity = targetKey(target)
+  state.data = snapshot(); state.revision = 0; state.identity = targetKey(target); state.backups = []
   state.baseline = { id: targetKey(target), data: snapshot(), sha: 's0' }
   remote = { data: snapshot(), sha: 's0' }; onWrite = undefined; onRead = undefined; writes = 0; rejectFirstWrite = false
   reads = []; force304 = false; resetRemoteCache()
@@ -61,6 +63,37 @@ beforeEach(() => {
 })
 
 describe('connected reconciliation', () => {
+  it('offers the version being replaced and keeps an on-device safety copy even when no download is made', async () => {
+    state.data = snapshot('local')
+    remote = { data: snapshot('cloud'), sha: 's1' }
+    const offer = vi.fn()
+    await resolveConnectedConflict(target, { remote, reason: 'Different changes' }, 'local', offer, () => true)
+    expect(offer).toHaveBeenCalledWith(snapshot('cloud'), 'before-cloud-overwrite')
+    expect(state.backups).toEqual([snapshot('cloud')])
+    expect(remote.data).toEqual(snapshot('local'))
+  })
+
+  it('only sets up a repository after verifying a personal installation for the signed-in user', async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      const { path } = JSON.parse(String(options.body)) as { path: string }
+      const body = path === '/user' ? { login: 'alice' } :
+        path.startsWith('/user/installations') ? { installations: [{ account: { login: 'bob', type: 'User' }, app_slug: 'planner', suspended_at: null }] } :
+          { private: true, owner: { login: 'alice' }, default_branch: 'main' }
+      return new Response(JSON.stringify({ status: 200, body }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetch)
+    await expect(setupRepository('planner', 'planner')).rejects.toBeInstanceOf(MissingInstallationError)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    fetch.mockImplementation(async (_url: string, options: RequestInit) => {
+      const { path } = JSON.parse(String(options.body)) as { path: string }
+      const body = path === '/user' ? { login: 'alice' } :
+        path.startsWith('/user/installations') ? { installations: [{ account: { login: 'alice', type: 'User' }, app_slug: 'planner', suspended_at: null }] } :
+          { private: true, owner: { login: 'alice' }, default_branch: 'main' }
+      return new Response(JSON.stringify({ status: 200, body }), { status: 200 })
+    })
+    await expect(setupRepository('planner', 'planner')).resolves.toEqual({ owner: 'alice', branch: 'main' })
+  })
+
   it('rejects malformed session responses rather than treating them as successful', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('invalid', { status: 200 })))
     await expect(sessionRequest('/logout', {})).rejects.toThrow('Invalid response from connected service.')

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { beginGitHubAuthorization, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback } from './auth'
+import { beginGitHubAuthorization, beginGitHubInstallation, canReturnFromInstallation, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback, takeGitHubInstallationCallback } from './auth'
 import worker from '../worker/index'
 
 const origin = 'https://planner.example'
@@ -20,6 +20,29 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('GitHub web authorization', () => {
+  it('continues only a matching, unexpired installation return and removes its parameters', () => {
+    const url = new URL(beginGitHubInstallation('planner'))
+    expect(url.origin + url.pathname).toBe('https://github.com/apps/planner/installations/new')
+    const state = url.searchParams.get('state')
+    expect(takeGitHubInstallationCallback(new URL(`${callback}?installation_id=123&setup_action=install&state=${state}`))).toBe(true)
+    expect(history.replaceState).toHaveBeenCalledWith(null, '', callback)
+    expect(() => takeGitHubInstallationCallback(new URL(`${callback}?installation_id=123&state=${state}`))).toThrow('could not be verified')
+    beginGitHubInstallation('planner')
+    expect(() => takeGitHubInstallationCallback(new URL(`${callback}?installation_id=123&state=wrong`))).toThrow('could not be verified')
+    beginGitHubInstallation('planner')
+    const pending = JSON.parse(sessionStorage.getItem('meetup-github-install')!)
+    pending.created -= 31 * 60 * 1000
+    sessionStorage.setItem('meetup-github-install', JSON.stringify(pending))
+    expect(() => takeGitHubInstallationCallback(new URL(`${callback}?installation_id=123&state=${pending.state}`))).toThrow('expired')
+  })
+
+  it('only starts installation-first when GitHub returns to this exact app location', () => {
+    expect(canReturnFromInstallation(callback, callback)).toBe(true)
+    expect(canReturnFromInstallation('https://other.example/planner/', callback)).toBe(false)
+    expect(canReturnFromInstallation(`${origin}/`, callback)).toBe(false)
+    expect(canReturnFromInstallation('', callback)).toBe(false)
+  })
+
   it('creates a PKCE-protected authorization and consumes the matching callback once', async () => {
     const url = new URL(await beginGitHubAuthorization('client', callback))
     expect(url.origin + url.pathname).toBe('https://github.com/login/oauth/authorize')

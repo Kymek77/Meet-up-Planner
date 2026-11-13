@@ -62,6 +62,12 @@ export class ConnectedGitHubError extends Error {
     else if (rateLimited) this.retryAt = Date.now() + 60000
   }
 }
+export class MissingInstallationError extends Error {
+  constructor() {
+    super('Add Meet-up Planner to your personal GitHub account to finish connecting.')
+    this.name = 'MissingInstallationError'
+  }
+}
 export async function github(path: string, method = 'GET', body?: object, etag?: string) {
   const response = await fetch('/api/github', {
     method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
@@ -104,7 +110,7 @@ export async function setupRepository(repo: string, slug: string) {
       if (installations.some(i => i.account?.type === 'User' && i.account.login?.toLowerCase() === owner.toLowerCase() && i.app_slug === slug && !i.suspended_at)) { installed = true; break }
       if (installations.length < 100) break
     }
-    if (!installed) throw new Error('Install the GitHub App on your personal account, then retry.')
+    if (!installed) throw new MissingInstallationError()
   }
   const path = repoPath(owner, repo)
   let result = await github(path)

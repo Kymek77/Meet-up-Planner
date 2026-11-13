@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { addHours, format, parseISO } from 'date-fns'
-import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
+import { AlertTriangle, ArrowDownToLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
 import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
 import { usePlanner } from './store'
 import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, hasPersonalInstallation, readCloud, writeCloud } from './sync'
-import { beginGitHubAuthorization, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback, type DeviceAuthorization } from './auth'
+import { beginGitHubAuthorization, beginGitHubInstallation, canReturnFromInstallation, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback, takeGitHubInstallationCallback, type DeviceAuthorization } from './auth'
 import Calendar from './Calendar'
 import ConnectedSync from './ConnectedSync'
 import { logoutConnected } from './connected'
@@ -56,7 +56,7 @@ function App() {
   const { data, ready, error, load, save } = usePlanner()
   const [page, setPage] = useState<Page>(() => {
     const query = new URLSearchParams(window.location.search)
-    return query.has('state') && (query.has('code') || query.has('error')) ? 'settings' : 'overview'
+    return (query.has('state') && (query.has('code') || query.has('error'))) || query.has('installation_id') || query.has('setup_action') ? 'settings' : 'overview'
   })
   const [periodId, setPeriodId] = useState('')
   const [dialog, setDialog] = useState<Dialog>(null)
@@ -66,7 +66,29 @@ function App() {
   const [buffer, setBuffer] = useState(Number(localStorage.getItem('meetup-buffer') ?? 30))
   const [online, setOnline] = useState(navigator.onLine)
   const [syncStatus, setSyncStatus] = useState('')
+  const [installReturn, setInstallReturn] = useState(() => {
+    const query = new URLSearchParams(window.location.search)
+    return query.has('installation_id') || query.has('setup_action')
+  })
+  const [installError, setInstallError] = useState('')
+  const installHandled = useRef(false)
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (!installReturn || installHandled.current) return
+    installHandled.current = true
+    try {
+      if (!takeGitHubInstallationCallback(new URL(window.location.href))) return
+      const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
+      void beginGitHubAuthorization(import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? '', callbackUrl)
+        .then(url => window.location.assign(url))
+        .catch(e => { setInstallError(e instanceof Error ? e.message : 'Could not continue connecting. Please try again.'); setInstallReturn(false) })
+    } catch (e) {
+      queueMicrotask(() => {
+        setInstallError(e instanceof Error ? e.message : 'Could not continue connecting. Please try again.')
+        setInstallReturn(false)
+      })
+    }
+  }, [installReturn])
   useEffect(() => { const update = () => setOnline(navigator.onLine); window.addEventListener('online', update); window.addEventListener('offline', update); return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update) } }, [])
   const period = data.periods.find(p => p.id === periodId) ?? data.periods[0]
   const meetings = data.meetings.filter(m => m.periodId === period?.id).sort((a, b) => a.start.localeCompare(b.start))
@@ -182,7 +204,7 @@ function App() {
         </>}
         {page === 'calendar' && <><div className="page-heading"><div><div className="eyebrow">A WEEK AT A TIME</div><h1>Your <em>calendar.</em></h1><p>See your time, their time and your plans together.</p></div></div>{period ? <Calendar key={period.id} period={period} friends={data.friends} blocks={blocks} meetings={meetings} onCreate={start => open({ kind: 'meeting', seed: { start, end: format(addHours(parseISO(start), 1), "yyyy-MM-dd'T'HH:mm") } })} onEditMeeting={item => open({ kind: 'meeting', item })} onEditBlock={item => open({ kind: 'availability', item })} onMove={item => void persist({ ...data, meetings: data.meetings.map(m => m.id === item.id ? item : m) })} /> : <Empty title="Start with a planning period">Create a period to see your calendar.</Empty>}</>}
         {page === 'itinerary' && <><div className="page-heading"><div><div className="eyebrow">ALL TOGETHER NOW</div><h1>Your <em>itinerary.</em></h1><p>Confirmed plans, all in one place.</p></div>{period && <Button secondary onClick={() => void navigator.clipboard.writeText(itineraryText(meetings, data))}>Copy itinerary</Button>}</div>{!period ? <Empty title="Start with a planning period">Create a period to start your itinerary.</Empty> : meetings.some(m => m.status === 'confirmed') ? groupedPlans(meetings.filter(m => m.status === 'confirmed')) : <Empty title="The best plans start here">Confirmed plans will appear here.</Empty>}</>}
-        <div hidden={page !== 'settings'}><SettingsPage data={data} save={persist} buffer={buffer} setBuffer={setBuffer} online={online} onSyncStatus={setSyncStatus} /></div>
+        <div hidden={page !== 'settings'}>{installReturn ? <p role="status">Finishing your GitHub connection…</p> : <>{installError && <p className="form-error" role="alert">{installError}</p>}<SettingsPage data={data} save={persist} buffer={buffer} setBuffer={setBuffer} online={online} onSyncStatus={setSyncStatus} /></>}</div>
       </main><footer>Made for more moments together <span>♥</span></footer>
     </div>
     <nav className="mobile-nav" aria-label="Main navigation">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={19} /><span>{label}</span></button>)}</nav>
@@ -213,6 +235,12 @@ function downloadPlannerBackup(data: PlannerData, label: string) {
   download(JSON.stringify(data, null, 2), `meet-up-planner-${label}-${timestamp}.json`, 'application/json')
 }
 
+function offerPlannerBackup(data: PlannerData, label: string) {
+  if (window.confirm('Would you like to download a backup of the version being replaced first? Choose Cancel to continue without downloading.')) {
+    downloadPlannerBackup(data, label)
+  }
+}
+
 function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: { data: PlannerData; save: (data: PlannerData) => Promise<void>; buffer: number; setBuffer: (value: number) => void; online: boolean; onSyncStatus: (status: string) => void }) {
   const [mode, setMode] = useState<'direct' | 'connected'>(() => localStorage.getItem('meetup-sync-mode') === 'connected' ? 'connected' : 'direct')
   const [switching, setSwitching] = useState(false)
@@ -240,11 +268,11 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     finally { setSwitching(false) }
   }
   return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
-    <section className="settings-card"><h2>Sync mode</h2><div className="form"><label>Choose how to connect<select value={mode} disabled={switching || directBusy} onChange={e => void switchMode(e.target.value as 'direct' | 'connected')}><option value="direct">Direct GitHub (current)</option><option value="connected">Connected Worker session</option></select></label>{switchError && <p className="form-error" role="alert">{switchError}</p>}</div></section>
-    {!switching && (mode === 'direct' ? <DirectSync data={data} save={save} online={online} onSyncStatus={onSyncStatus} onBusy={setDirectBusy} /> : <ConnectedSync data={data} online={online} onSyncStatus={onSyncStatus} backup={downloadPlannerBackup} />)}
-    <section className="settings-card"><h2>Planning preferences</h2><div className="form"><label>Buffer between plans (minutes)<input type="number" min="0" max="1440" value={buffer} onChange={e => { const n = Math.max(0, Math.min(1440, Number(e.target.value))); setBuffer(n); localStorage.setItem('meetup-buffer', String(n)) }} /></label></div></section>
-    <section className="settings-card"><h2>Backups</h2><p>Export a copy before importing or clearing data. Import replaces everything on this device.</p><div className="sync-actions"><Button secondary onClick={() => download(JSON.stringify(data, null, 2), 'meet-up-planner.json', 'application/json')}>Export JSON</Button><Button secondary onClick={() => download(itineraryText(data.meetings, data), 'meet-up-itinerary.txt', 'text/plain')}>Export confirmed itinerary</Button><label className="button secondary file-button">Import JSON<input type="file" accept=".json,application/json" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; void file.text().then(text => { const parsed: unknown = JSON.parse(text); if (!isPlannerData(parsed)) throw new Error('Invalid planner backup.'); if (window.confirm('Replace all local planner data with this backup?')) void save(parsed) }).catch(() => window.alert('This file is not a valid Meet-up Planner backup.')) }} /></label></div></section>
-    <section className="settings-card"><h2>Local data</h2><p>Planner data is stored in this browser's IndexedDB. Clearing browser data will remove it.</p><Button secondary onClick={() => { if (window.confirm('Delete all local Meet-up Planner data? This cannot be undone.')) void save(emptyData()) }}>Clear local data</Button></section>
+    {!switching && (mode === 'direct' ? <DirectSync data={data} save={save} online={online} onSyncStatus={onSyncStatus} onBusy={setDirectBusy} /> : <ConnectedSync data={data} online={online} onSyncStatus={onSyncStatus} backup={offerPlannerBackup} />)}
+    <section className="settings-card"><h2>Planning preferences</h2><p>Get a warning when plans are too close together, so you have time to travel or take a break.</p><div className="form"><label>Time between plans (minutes)<input type="number" min="0" max="1440" value={buffer} onChange={e => { const n = Math.max(0, Math.min(1440, Number(e.target.value))); setBuffer(n); localStorage.setItem('meetup-buffer', String(n)) }} /></label></div></section>
+    <section className="settings-card"><h2>Backups</h2><p>Download a backup to keep your planner safe. Restoring a backup replaces the planner on this device and may sync that replacement to GitHub.</p><div className="sync-actions"><Button secondary onClick={() => download(JSON.stringify(data, null, 2), 'meet-up-planner.json', 'application/json')}>Download backup</Button><Button secondary onClick={() => download(itineraryText(data.meetings, data), 'meet-up-itinerary.txt', 'text/plain')}>Download itinerary</Button><label className="button secondary file-button">Restore backup<input type="file" accept=".json,application/json" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; void file.text().then(text => { const parsed: unknown = JSON.parse(text); if (!isPlannerData(parsed)) throw new Error('Invalid planner backup.'); if (window.confirm('Replace the planner on this device with this backup? If connected, this change may also sync to GitHub.')) { offerPlannerBackup(data, 'before-restore'); void save(parsed) } }).catch(() => window.alert('This file is not a valid Meet-up Planner backup.')) }} /></label></div></section>
+    <section className="settings-card"><h2>Delete planner data</h2><p>Clearing browser data can remove your planner. If connected, deletion may also sync to your other devices.</p><Button secondary onClick={() => { if (window.confirm('Delete the planner on this device? If connected, this deletion may also sync to GitHub and your other devices. This cannot be undone without a backup.')) { offerPlannerBackup(data, 'before-delete'); void save(emptyData()) } }}>Delete planner on this device</Button></section>
+    <section className="settings-card"><details className="advanced-sync"><summary>Connection options</summary><div className="form"><p className="form-hint">Stay signed in across refreshes, or reconnect each time you reopen the planner. Changing this pauses syncing; your planner stays on this device.</p><label>How to stay connected<select value={mode} disabled={switching || directBusy} onChange={e => void switchMode(e.target.value as 'direct' | 'connected')}><option value="direct">Reconnect after refresh</option><option value="connected">Stay signed in</option></select></label>{switchError && <p className="form-error" role="alert">{switchError}</p>}</div></details></section>
   </>
 }
 
@@ -253,11 +281,14 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
   const clientId = import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? ''
   const appSlug = import.meta.env.VITE_GITHUB_APP_SLUG?.trim() ?? ''
   const workerUrl = import.meta.env.VITE_GITHUB_AUTH_URL?.trim() ?? ''
+  const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
+  const installationReturnsHere = canReturnFromInstallation(import.meta.env.VITE_GITHUB_APP_SETUP_URL?.trim() ?? '', callbackUrl)
   const [deviceAuthorization, setDeviceAuthorization] = useState<DeviceAuthorization | null>(null)
   const [authenticating, setAuthenticating] = useState(false)
   const authController = useRef<AbortController | null>(null)
   const pendingToken = useRef('')
   const [needsInstallation, setNeedsInstallation] = useState(false)
+  const [installationFromDevice, setInstallationFromDevice] = useState(false)
   const callbackHandled = useRef(false)
   const [owner, setOwner] = useState(localStorage.getItem('meetup-owner') ?? '')
   const [repo, setRepo] = useState(localStorage.getItem('meetup-repo') ?? 'meet-up-planner-data')
@@ -273,12 +304,15 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
   const retryDelay = useRef(5000)
   const target = useCallback(() => ({ owner: owner.trim(), repo: repo.trim(), branch: branch.trim(), path: path.trim() }), [owner, repo, branch, path])
   const shaKey = useCallback((remote = target()) => `meetup-sha:${remote.owner.toLowerCase()}/${remote.repo.toLowerCase()}/${remote.branch}/${remote.path}`, [target])
-  const signIn = async () => {
+  const signIn = async (alreadyInstalled = false) => {
     if (!clientId || !workerUrl || !appSlug) { setMessage('GitHub App sign-in is not configured for this deployment.'); return }
     setBusy(true); setAuthenticating(true); setMessage('')
     try {
-      const callbackUrl = new URL(import.meta.env.BASE_URL, window.location.origin).href
-      window.location.assign(await beginGitHubAuthorization(clientId, callbackUrl))
+      if (installationReturnsHere && !alreadyInstalled && !localStorage.getItem('meetup-owner')) {
+        window.location.assign(beginGitHubInstallation(appSlug))
+      } else {
+        window.location.assign(await beginGitHubAuthorization(clientId, callbackUrl))
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : 'GitHub sign-in failed.')
       setBusy(false); setAuthenticating(false)
@@ -359,6 +393,7 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
     }
   }, [appSlug, repo, path, shaKey, save, onSyncStatus])
   const signInWithDevice = () => {
+    setInstallationFromDevice(true)
     void completeSignIn(async signal => {
       const authorization = await requestDeviceAuthorization(workerUrl, signal)
       setDeviceAuthorization(authorization)
@@ -370,6 +405,7 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
     authController.current = null
     pendingToken.current = ''
     setNeedsInstallation(false)
+    setInstallationFromDevice(false)
     setToken(''); setConflict(null); setDeviceAuthorization(null); setAuthenticating(false); setMessage('Signed out of GitHub.')
     onSyncStatus('GitHub sync is paused. Your planner remains saved on this device.')
   }
@@ -392,8 +428,8 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
   }, [token])
   const sync = async (direction: 'pull' | 'push') => {
     if (!token || !owner || !repo) { setMessage('Connect the GitHub App before syncing.'); return }
-    if (direction === 'pull' && !window.confirm('Replace all local planner data with the cloud copy? A dated backup will be downloaded first.')) return
-    if (direction === 'pull') downloadPlannerBackup(data, 'before-pull')
+    if (direction === 'pull' && !window.confirm('Replace the planner on this device with the GitHub copy?')) return
+    if (direction === 'pull') offerPlannerBackup(data, 'before-pull')
     setBusy(true); setMessage('')
     setConflict(null)
     const syncTarget = target(), key = shaKey(syncTarget)
@@ -442,12 +478,12 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
   }
   const resolveConflict = async (choice: 'cloud' | 'local') => {
     if (!conflict || !token) return
-    if (choice === 'local' && !window.confirm('Replace the newer cloud copy with the data on this device?')) return
+    if (!window.confirm(choice === 'local' ? 'Replace the GitHub copy with the planner on this device?' : 'Replace the planner on this device with the GitHub copy?')) return
     setBusy(true); setMessage('')
     const syncTarget = target(), key = shaKey(syncTarget)
     try {
       if (choice === 'cloud') {
-        downloadPlannerBackup(data, 'before-cloud-pull')
+        offerPlannerBackup(data, 'before-cloud-pull')
         await save(conflict.data)
         if (usePlanner.getState().error) throw new Error('The cloud copy could not be saved locally.')
         localStorage.setItem(key, conflict.sha)
@@ -455,7 +491,7 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
         setMessage('The latest cloud copy is now saved on this device.')
         onSyncStatus('Synced with GitHub')
       } else {
-        downloadPlannerBackup(conflict.data, 'before-cloud-overwrite')
+        offerPlannerBackup(conflict.data, 'before-cloud-overwrite')
         const sha = await writeCloud(token, syncTarget, data, conflict.sha)
         localStorage.setItem(key, sha)
         syncedData.current = JSON.stringify(data)
@@ -545,18 +581,16 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
     timer = window.setTimeout(() => void attemptSync(), 2000)
     return () => window.clearTimeout(timer)
   }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
-  return <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Sign in with GitHub to connect your private planner repository. If needed, we’ll guide you through installing the GitHub App and creating the repository. Your access token stays in memory and is cleared when you reload or sign out.</p>
+  return <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>Save and sync</h2><p>Your planner is saved on this device. Connect GitHub to keep a private copy and use it on your other devices. GitHub will ask you to approve access. Choose only the planner repository if possible; access to all repositories also includes your other repositories.</p>
       <div className="form">
+        {!token && !authenticating && !needsInstallation && <p role="status" className="form-hint">Not connected · Your planner stays on this device.</p>}
         {(!clientId || !workerUrl || !appSlug) && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must configure the GitHub App and authentication service.</p>}
         {!token && !needsInstallation ? <div className="sync-actions"><button className="button" disabled={busy || !clientId || !workerUrl || !appSlug} onClick={() => void signIn()}>{authenticating ? 'Connecting to GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : token && <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
-        {needsInstallation && <div className="sync-actions"><p>GitHub requires you to approve the app installation. Choose <strong>All repositories</strong> to allow automatic setup; this also grants access to your other repositories. With <strong>Only select repositories</strong>, GitHub may require an existing repository selection. The app can create its own private repository if the required permission is granted.</p><a className="button" href={`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`} target="_blank" rel="noreferrer">Install GitHub App</a><button className="button secondary" disabled={busy} onClick={() => { const accessToken = pendingToken.current; if (accessToken) void completeSignIn(async () => accessToken) }}>Continue after installation</button><button className="button secondary" onClick={signOut}>Cancel</button></div>}
-        {!token && !authenticating && !needsInstallation && <button className="button secondary" disabled={busy || !workerUrl || !appSlug} onClick={signInWithDevice}>Use device code instead</button>}
+        {needsInstallation && <div className="sync-actions"><p>GitHub needs you to add Meet-up Planner to your personal account. Choose only the planner repository if possible; choosing all repositories gives the app access to your other repositories too.</p>{installationReturnsHere && !installationFromDevice ? <button className="button" onClick={() => window.location.assign(beginGitHubInstallation(appSlug))}>Continue on GitHub</button> : <><a className="button" href={`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`} target="_blank" rel="noreferrer">Add Meet-up Planner on GitHub</a><button className="button secondary" disabled={busy} onClick={() => { const accessToken = pendingToken.current; if (accessToken) void completeSignIn(async () => accessToken) }}>I've added it</button></>}<button className="button secondary" onClick={signOut}>Cancel</button></div>}
         {deviceAuthorization && <div className="device-code" role="status"><p>Open <a href={deviceAuthorization.verification_uri} target="_blank" rel="noreferrer">GitHub device activation</a>, enter this code, then return to this app:</p><strong>{deviceAuthorization.user_code}</strong><p>Keep this app open while authorizing. The code expires in about {Math.ceil(deviceAuthorization.expires_in / 60)} minutes.</p></div>}
-        <label>Private data repository<input value={repo} disabled={Boolean(token)} onChange={e => { setRepo(e.target.value); localStorage.setItem('meetup-repo', e.target.value) }} placeholder="meet-up-planner-data" /></label>
-        <details className="advanced-sync"><summary>Advanced repository settings</summary><div className="form"><label>Branch<input value={branch} disabled={Boolean(token)} onChange={e => { setBranch(e.target.value); localStorage.setItem('meetup-branch', e.target.value) }} /></label><label>Planner file path<input value={path} disabled={Boolean(token)} onChange={e => { setPath(e.target.value); localStorage.setItem('meetup-path', e.target.value) }} /></label></div></details>
-        {token && <div className="sync-actions"><button className="button" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('push')}><ArrowUpFromLine size={16} /> Push now</button><button className="button secondary" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('pull')}><ArrowDownToLine size={16} /> Pull from GitHub</button></div>}
-        {conflict && <div className="sync-conflict" role="region" aria-labelledby="sync-conflict-title"><h3 id="sync-conflict-title">Two versions of your planner</h3><p>This cloud copy was updated elsewhere. Choose one version to keep; records are not automatically merged.</p><div className="conflict-summary"><div><strong>This device</strong><span>{data.friends.length} friends · {data.periods.length} periods · {data.meetings.length} plans</span></div><div><strong>GitHub</strong><span>{conflict.data.friends.length} friends · {conflict.data.periods.length} periods · {conflict.data.meetings.length} plans</span></div></div><div className="sync-actions"><button className="button secondary" disabled={busy || !token} onClick={() => void resolveConflict('cloud')}>Use cloud copy</button><button className="button" disabled={busy || !token} onClick={() => void resolveConflict('local')}>Keep this device and overwrite cloud</button></div></div>}
-        {message && <p role="status" className="sync-message">{message}</p>}<p className="form-hint">Changes save locally immediately, then sync automatically after a short pause. Offline changes stay queued on this device and sync after reconnecting. Conflicts never overwrite data silently; replacing either copy downloads a dated backup first.</p>
+        <details className="advanced-sync"><summary>Advanced connection settings</summary><div className="form"><p className="form-hint">This connection needs signing in again after a refresh. Changes are sent automatically while signed in; receiving an updated copy is manual.</p>{!token && !authenticating && !needsInstallation && <div className="sync-actions"><button className="button secondary" disabled={busy || !workerUrl || !appSlug} onClick={signInWithDevice}>Connect with a device code</button>{installationReturnsHere && <button className="button secondary" disabled={busy} onClick={() => void signIn(true)}>Already added on GitHub? Sign in</button>}</div>}<label>Private repository<input value={repo} disabled={Boolean(token)} onChange={e => { setRepo(e.target.value); localStorage.setItem('meetup-repo', e.target.value) }} placeholder="meet-up-planner-data" /></label><label>Branch<input value={branch} disabled={Boolean(token)} onChange={e => { setBranch(e.target.value); localStorage.setItem('meetup-branch', e.target.value) }} /></label><label>Planner file path<input value={path} disabled={Boolean(token)} onChange={e => { setPath(e.target.value); localStorage.setItem('meetup-path', e.target.value) }} /></label>{token && <div className="sync-actions"><button className="button secondary" disabled={busy || !online || Boolean(conflict)} onClick={() => void sync('pull')}><ArrowDownToLine size={16} /> Get GitHub copy</button></div>}</div></details>
+        {conflict && <div className="sync-conflict" role="region" aria-labelledby="sync-conflict-title"><h3 id="sync-conflict-title">Two versions of your planner</h3><p>Choose one version to keep. They cannot be combined automatically; you can download a backup of the other first.</p><div className="conflict-summary"><div><strong>This device</strong><span>{data.friends.length} friends · {data.periods.length} periods · {data.meetings.length} plans</span></div><div><strong>GitHub</strong><span>{conflict.data.friends.length} friends · {conflict.data.periods.length} periods · {conflict.data.meetings.length} plans</span></div></div><div className="sync-actions"><button className="button secondary" disabled={busy || !token} onClick={() => void resolveConflict('cloud')}>Use GitHub copy</button><button className="button" disabled={busy || !token} onClick={() => void resolveConflict('local')}>Keep this device's copy</button></div></div>}
+        {message && <p role="status" className="sync-message">{message}</p>}<p className="form-hint">Changes are saved on this device first. While signed in, they are sent to GitHub automatically. After a refresh, connect again to resume syncing.</p>
       </div>
     </section>
 }
