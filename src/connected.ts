@@ -1,6 +1,6 @@
 import { isPlannerData, type PlannerData } from './model'
 import { mergePlannerData } from './merge'
-import { commitSyncState, readSyncState, saveSyncBackup, withSyncLock } from './store'
+import { clearPendingUpload, commitPendingUpload, commitSyncState, readSyncState, savePendingUpload, saveSyncBackup, withSyncLock } from './store'
 
 export type Target = { owner: string; repo: string; branch: string; path: string }
 export type Remote = { data: PlannerData; sha: string }
@@ -182,6 +182,14 @@ export async function reconcile(target: Target, active: () => boolean): Promise<
       const baseline = state.baseline && validSnapshot(state.baseline.data) && state.baseline.sha ? state.baseline : undefined
       if (state.baseline && !baseline) return { remote, reason: 'The trusted baseline is invalid.' }
       if (state.identity && state.identity !== id) return { remote, reason: 'This account or repository has no trusted baseline for this device.' }
+      if (state.pending) {
+        if (state.pending.baselineSha !== baseline?.sha) return { remote, reason: 'The pending upload no longer has a trusted baseline.' }
+        if (remote && same(state.pending.data, remote.data)) {
+          if (!await commitPendingUpload(state.pending, remote.sha)) return { remote, reason: 'Changes made during sync conflict with other changes.' }
+          continue
+        }
+        await clearPendingUpload(id)
+      }
       if (!baseline && remote && !same(state.data, remote.data)) return { remote, reason: 'This account or repository has no trusted baseline for this device.' }
       if (!baseline && !remote && state.identity === id) return { remote, reason: 'The trusted baseline is missing.' }
       if (baseline && !remote) return { remote, reason: 'The cloud copy was deleted. Choose whether to restore it.' }
@@ -194,8 +202,13 @@ export async function reconcile(target: Target, active: () => boolean): Promise<
       let sha = remote?.sha
       if (!remote || !same(merged, remote.data)) {
         if (!active()) return null
+        const upload = { id, localBase: state.data, data: merged, baselineSha: baseline?.sha }
+        await savePendingUpload(upload)
         sha = await writeRemote(target, merged, remote?.sha) ?? undefined
         if (!sha) continue
+        if (!active()) return null
+        if (!await commitPendingUpload(upload, sha)) return { remote: { data: merged, sha }, reason: 'Changes made during sync conflict with other changes.' }
+        continue
       }
       if (!sha) throw new Error('Missing cloud revision.')
       if (await commitSyncState(id, state.revision, merged, sha)) return null
@@ -210,6 +223,7 @@ export async function resolveConnectedConflict(target: Target, conflict: Conflic
     const id = targetKey(target), state = await readSyncState(id), latest = await readRemote(target)
     if (!validSnapshot(state.data)) throw new Error('The local planner is invalid. Export it before resolving this conflict.')
     if (latest?.sha !== conflict.remote?.sha) throw new Error('The cloud copy changed again. Sync to review the latest version.')
+    await clearPendingUpload(id)
     if (choice === 'cloud') {
       if (!latest) throw new Error('There is no cloud copy to use.')
       await saveSyncBackup(state.data)
@@ -220,9 +234,11 @@ export async function resolveConnectedConflict(target: Target, conflict: Conflic
       if (latest) backup(latest.data, 'before-cloud-overwrite')
       else backup(state.data, 'before-cloud-restore')
       if (!active()) throw new Error('Sync is paused.')
+      const upload = { id, localBase: state.data, data: state.data, baselineSha: state.baseline?.sha, allowIdentityChange: true }
+      await savePendingUpload(upload)
       const sha = await writeRemote(target, state.data, latest?.sha)
       if (!sha) throw new Error('The cloud copy changed again. Sync to review the latest version.')
-      if (!await commitSyncState(id, state.revision, state.data, sha)) throw new Error('Local data changed during sync. Review the conflict again.')
+      if (!active() || !await commitPendingUpload(upload, sha)) throw new Error('Local data changed during sync. Review the conflict again.')
     }
   })
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyData, type PlannerData } from './model'
+import type { PendingUpload } from './store'
 
 const state = vi.hoisted(() => ({
   data: null as PlannerData | null,
@@ -7,17 +8,32 @@ const state = vi.hoisted(() => ({
   identity: undefined as string | undefined,
   revision: 0,
   backups: [] as PlannerData[],
+  pending: undefined as PendingUpload | undefined,
 }))
-vi.mock('./store', () => ({
+vi.mock('./store', async () => {
+  const { mergePlannerData } = await import('./merge')
+  return {
   withSyncLock: async (fn: () => Promise<unknown>) => fn(),
   readSyncState: async () => ({ ...state }),
   saveSyncBackup: async (data: PlannerData) => { state.backups.push(structuredClone(data)) },
+  savePendingUpload: async (upload: PendingUpload) => { state.pending = structuredClone(upload) },
+  clearPendingUpload: async () => { state.pending = undefined },
+  commitPendingUpload: async (upload: PendingUpload, sha: string) => {
+    if (!state.data || !state.pending || state.baseline?.sha !== upload.baselineSha) return false
+    const result = mergePlannerData(upload.localBase, state.data, upload.data)
+    if (!result.ok) return false
+    state.data = structuredClone(result.data)
+    state.baseline = { id: upload.id, data: structuredClone(upload.data), sha }
+    state.identity = upload.id; state.pending = undefined
+    return true
+  },
   commitSyncState: async (id: string, revision: number, data: PlannerData, sha: string) => {
     if (revision !== state.revision) return false
     state.data = structuredClone(data); state.baseline = { id, data: structuredClone(data), sha }; state.identity = id
     return true
   },
-}))
+  }
+})
 import { ConnectedGitHubError, MissingInstallationError, readRemote, reconcile, resetRemoteCache, resolveConnectedConflict, sessionRequest, setupRepository, targetKey, type Target } from './connected'
 
 const target: Target = { owner: 'alice', repo: 'planner', branch: 'main', path: 'data/planner.json' }
@@ -32,7 +48,7 @@ let reads: { path: string; etag?: string }[] = []
 let force304 = false
 
 beforeEach(() => {
-  state.data = snapshot(); state.revision = 0; state.identity = targetKey(target); state.backups = []
+  state.data = snapshot(); state.revision = 0; state.identity = targetKey(target); state.backups = []; state.pending = undefined
   state.baseline = { id: targetKey(target), data: snapshot(), sha: 's0' }
   remote = { data: snapshot(), sha: 's0' }; onWrite = undefined; onRead = undefined; writes = 0; rejectFirstWrite = false
   reads = []; force304 = false; resetRemoteCache()
@@ -127,6 +143,42 @@ describe('connected reconciliation', () => {
     expect(state.data).toEqual(snapshot('first', 'later'))
     expect(state.baseline?.data).toEqual(snapshot('first', 'later'))
     expect(remote?.data).toEqual(snapshot('first', 'later'))
+  })
+
+  it('keeps a second edit of the same record during upload without a false conflict', async () => {
+    const base = snapshot('f')
+    state.baseline = { id: targetKey(target), data: base, sha: 's0' }
+    remote = { data: base, sha: 's0' }
+    const first = { ...base, friends: [{ ...person('f'), name: 'first move' }] }
+    const later = { ...base, friends: [{ ...person('f'), name: 'later move' }] }
+    state.data = first
+    onWrite = () => { state.data = later; state.revision++ }
+    expect(await reconcile(target, () => true)).toBeNull()
+    expect(remote?.data).toEqual(later)
+    expect(state.data).toEqual(later)
+    expect(state.baseline?.data).toEqual(later)
+  })
+
+  it('recovers a completed upload after interruption and preserves newer edits', async () => {
+    const base = snapshot('f')
+    const uploaded = { ...base, friends: [{ ...person('f'), name: 'uploaded' }] }
+    const later = { ...base, friends: [{ ...person('f'), name: 'later' }] }
+    state.baseline = { id: targetKey(target), data: base, sha: 's0' }
+    state.pending = { id: targetKey(target), localBase: uploaded, data: uploaded, baselineSha: 's0' }
+    state.data = later
+    remote = { data: uploaded, sha: 's1' }
+    expect(await reconcile(target, () => true)).toBeNull()
+    expect(remote?.data).toEqual(later)
+    expect(state.pending).toBeUndefined()
+  })
+
+  it('still reports a genuine edit conflict from another device', async () => {
+    const base = snapshot('f')
+    state.baseline = { id: targetKey(target), data: base, sha: 's0' }
+    state.data = { ...base, friends: [{ ...person('f'), name: 'local' }] }
+    remote = { data: { ...base, friends: [{ ...person('f'), name: 'remote' }] }, sha: 's1' }
+    expect((await reconcile(target, () => true))?.reason).toMatch(/conflicting/)
+    expect(writes).toBe(0)
   })
 
   it('retries rather than overwriting a local edit made while downloading', async () => {

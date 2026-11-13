@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import Dexie from 'dexie'
 import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyData, type PlannerData } from './model'
-import { commitSyncState, readSyncState, usePlanner } from './store'
+import { commitPendingUpload, commitSyncState, readSyncState, savePendingUpload, usePlanner } from './store'
 
 const person = (id: string, name = id) => ({ id, name, colour: '#fff', priority: 'normal' as const, createdAt: '', updatedAt: '' })
 const snapshot = (...friends: ReturnType<typeof person>[]): PlannerData => ({ ...emptyData(), friends })
@@ -16,10 +16,11 @@ beforeAll(async () => {
   await inspector.open()
 })
 beforeEach(async () => {
-  await inspector.transaction('rw', inspector.table('snapshots'), inspector.table('baselines'), inspector.table('metadata'), async () => {
+  await inspector.transaction('rw', inspector.table('snapshots'), inspector.table('baselines'), inspector.table('metadata'), inspector.table('uploads'), async () => {
     await inspector.table('snapshots').clear()
     await inspector.table('baselines').clear()
     await inspector.table('metadata').clear()
+    await inspector.table('uploads').clear()
   })
   await usePlanner.getState().load()
 })
@@ -65,5 +66,40 @@ describe('IndexedDB connected sync transactions', () => {
     await usePlanner.getState().save(snapshot(person('a'), person('b', 'my edit')), base)
     expect(usePlanner.getState().error).toBe('')
     expect((await readSyncState(id)).data).toEqual(snapshot(person('a', 'other tab'), person('b', 'my edit')))
+  })
+
+  it('records an upload while retaining a newer local edit to the same record', async () => {
+    const base = snapshot(person('a', 'base'))
+    await usePlanner.getState().save(base, emptyData())
+    const initial = await readSyncState(id)
+    expect(await commitSyncState(id, initial.revision, base, 'base-sha')).toBe(true)
+    const uploaded = snapshot(person('a', 'first'))
+    await usePlanner.getState().save(uploaded, base)
+    const pending = { id, localBase: uploaded, data: uploaded, baselineSha: 'base-sha' }
+    await savePendingUpload(pending)
+    const later = snapshot(person('a', 'later'))
+    await usePlanner.getState().save(later, uploaded)
+    expect(await commitPendingUpload(pending, 'uploaded-sha')).toBe(true)
+    const after = await readSyncState(id)
+    expect(after.data).toEqual(later)
+    expect(after.baseline?.data).toEqual(uploaded)
+    expect(after.pending).toBeUndefined()
+  })
+
+  it('does not rebase incompatible remote and later local edits over each other', async () => {
+    const base = snapshot(person('a', 'base'))
+    await usePlanner.getState().save(base, emptyData())
+    const initial = await readSyncState(id)
+    expect(await commitSyncState(id, initial.revision, base, 'base-sha')).toBe(true)
+    const uploaded = snapshot(person('a', 'remote edit'))
+    const pending = { id, localBase: base, data: uploaded, baselineSha: 'base-sha' }
+    await savePendingUpload(pending)
+    const later = snapshot(person('a', 'local edit'))
+    await usePlanner.getState().save(later, base)
+    expect(await commitPendingUpload(pending, 'uploaded-sha')).toBe(false)
+    const after = await readSyncState(id)
+    expect(after.data).toEqual(later)
+    expect(after.baseline?.data).toEqual(base)
+    expect(after.pending).toEqual(pending)
   })
 })

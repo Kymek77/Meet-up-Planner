@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { addHours, format, parseISO } from 'date-fns'
 import { AlertTriangle, ArrowDownToLine, CalendarDays, Check, ChevronDown, Clock3, Cloud, Heart, LayoutDashboard, MapPin, Pencil, Plus, Settings, Sparkles, Trash2, Users, X } from 'lucide-react'
-import { emptyData, freeGaps, getDashboardHighlights, isPlannerData, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
-import { usePlanner } from './store'
+import { emptyData, freeGaps, getDashboardHighlights, inPeriod, isPlannerData, matchesPeriodLocation, meetingFriendIds, meetingWarnings, validRange, type Availability, type Friend, type Meeting, type Period, type PlannerData, type Priority } from './model'
+import { clearPendingUpload, savePendingUpload, usePlanner } from './store'
 import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, hasPersonalInstallation, readCloud, writeCloud } from './sync'
+import { acknowledgeDirectUpload, pushDirect } from './direct-sync'
 import { beginGitHubAuthorization, beginGitHubInstallation, canReturnFromInstallation, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, resetInstallationAttempt, shouldAutomaticallyInstall, takeGitHubCallback, takeGitHubInstallationCallback, type DeviceAuthorization } from './auth'
 import Calendar from './Calendar'
 import ConnectedSync from './ConnectedSync'
@@ -63,6 +64,9 @@ function App() {
   const dialogBase = useRef<PlannerData | null>(null)
   const [formError, setFormError] = useState('')
   const [friendFilter, setFriendFilter] = useState('active')
+  const [locationFilter, setLocationFilter] = useState(false)
+  const [includeUnknownLocation, setIncludeUnknownLocation] = useState(false)
+  const [periodIndefinite, setPeriodIndefinite] = useState(false)
   const [buffer, setBuffer] = useState(Number(localStorage.getItem('meetup-buffer') ?? 30))
   const [online, setOnline] = useState(navigator.onLine)
   const [syncStatus, setSyncStatus] = useState('')
@@ -92,18 +96,40 @@ function App() {
   useEffect(() => { const update = () => setOnline(navigator.onLine); window.addEventListener('online', update); window.addEventListener('offline', update); return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update) } }, [])
   const period = data.periods.find(p => p.id === periodId) ?? data.periods[0]
   const meetings = data.meetings.filter(m => m.periodId === period?.id).sort((a, b) => a.start.localeCompare(b.start))
-  const blocks = data.availability.filter(a => a.periodId === period?.id).sort((a, b) => a.start.localeCompare(b.start))
-  const unplanned = data.friends.filter(f => !f.archived && !meetings.some(m => m.friendId === f.id && m.status === 'confirmed'))
+  const blocks = data.availability.filter(a => period && (!period.start || a.end.slice(0, 10) >= period.start) && (!period.end || a.start.slice(0, 10) <= period.end)).sort((a, b) => a.start.localeCompare(b.start))
+  const unplanned = data.friends.filter(f => !f.archived && !meetings.some(m => meetingFriendIds(m).includes(f.id) && m.status === 'confirmed'))
   const conflictCount = meetings.filter(m => meetingWarnings(m, data, buffer).length).length
   const dashboard = getDashboardHighlights(meetings, data.friends)
   const friend = (id: string) => data.friends.find(f => f.id === id)
-  const open = (next: Dialog) => { dialogBase.current = data; setFormError(''); setDialog(next) }
+  const visibleFriends = data.friends.filter(f => {
+    if (locationFilter && period?.location && !matchesPeriodLocation(f, period, includeUnknownLocation)) return false
+    const own = meetings.filter(m => meetingFriendIds(m).includes(f.id))
+    if (friendFilter === 'archived') return f.archived
+    if (f.archived) return false
+    if (friendFilter === 'active') return true
+    if (friendFilter === 'unbooked') return !own.some(m => m.status === 'confirmed')
+    if (friendFilter === 'confirmed' || friendFilter === 'awaiting-reply') return own.some(m => m.status === friendFilter)
+    return f.priority === friendFilter
+  })
+  const open = (next: Dialog) => { dialogBase.current = data; setFormError(''); if (next?.kind === 'period') setPeriodIndefinite(Boolean(next.item && !next.item.start)); setDialog(next) }
   const persist = async (next: PlannerData, base = data) => { await save(next, base) }
   const remove = (kind: 'period' | 'friend' | 'availability' | 'meeting', id: string) => {
-    if (!window.confirm(`Delete this ${kind}?${kind === 'friend' || kind === 'period' ? ' Related availability and plans will also be deleted.' : ''}`)) return
+    const soloPlans = kind === 'friend' ? data.meetings.filter(m => meetingFriendIds(m).length === 1 && meetingFriendIds(m).includes(id)).length : 0
+    const explanation = kind === 'friend' ? ` Their availability and ${soloPlans} one-person plan(s) will be deleted; group plans will keep the other friends.` : kind === 'period' ? ' Its plans and availability will be deleted, including availability shown in other periods.' : ''
+    if (!window.confirm(`Delete this ${kind}?${explanation}`)) return
     const next = { ...data }
     if (kind === 'period') { next.periods = data.periods.filter(x => x.id !== id); next.availability = data.availability.filter(x => x.periodId !== id); next.meetings = data.meetings.filter(x => x.periodId !== id) }
-    if (kind === 'friend') { next.friends = data.friends.filter(x => x.id !== id); next.availability = data.availability.filter(x => x.friendId !== id); next.meetings = data.meetings.filter(x => x.friendId !== id) }
+    if (kind === 'friend') {
+      next.friends = data.friends.filter(x => x.id !== id)
+      next.availability = data.availability.filter(x => x.friendId !== id)
+      next.meetings = data.meetings.flatMap(m => {
+        const ids = meetingFriendIds(m).filter(friendId => friendId !== id)
+        if (!ids.length) return []
+        if (ids.length === meetingFriendIds(m).length) return [m]
+        const { friendIds: _friendIds, ...rest } = m
+        return [{ ...rest, friendId: ids[0], ...(ids.length > 1 ? { friendIds: ids } : {}) }]
+      })
+    }
     if (kind === 'availability') next.availability = data.availability.filter(x => x.id !== id)
     if (kind === 'meeting') next.meetings = data.meetings.filter(x => x.id !== id)
     void persist(next)
@@ -114,8 +140,11 @@ function App() {
     const f = new FormData(e.currentTarget), next = { ...data }
     const id = dialog.item?.id ?? uid()
     if (dialog.kind === 'period') {
-      const item = { id, name: value(f, 'name'), start: value(f, 'start'), end: value(f, 'end') }
-      if (!item.name || !item.start || !item.end || item.start > item.end) { setFormError('Enter a name and a valid date range.'); return }
+      const location = value(f, 'location'), start = value(f, 'start'), end = value(f, 'end')
+      const item: Period = { id, name: value(f, 'name'), ...(periodIndefinite ? {} : { start, end }), ...(location ? { location } : {}) }
+      if (!item.name || (!periodIndefinite && (!start || !end || start > end))) { setFormError('Enter a name and a valid date range.'); return }
+      if (dialog.item && [...data.meetings, ...data.availability].some(x => x.periodId === id && !inPeriod(item, x.start, x.end)) && !window.confirm('Some existing plans or availability are outside these dates. Keep them and show warnings?')) return
+      if (periodIndefinite || location) next.version = 2
       next.periods = [...data.periods.filter(p => p.id !== id), item]
       setPeriodId(id)
     } else if (dialog.kind === 'friend') {
@@ -127,15 +156,20 @@ function App() {
       if (!period) return
       const start = value(f, 'start'), end = value(f, 'end')
       if (!validRange(start, end)) { setFormError('The end time must be after the start time.'); return }
-      if (start.slice(0, 10) < period.start || end.slice(0, 10) > period.end) { setFormError('Choose times within the planning period.'); return }
+      if (!(dialog.kind === 'availability' && dialog.item) && !inPeriod(period, start, end)) { setFormError('Choose times within the planning period.'); return }
       if (dialog.kind === 'availability') {
         const selected = value(f, 'friendId')
-        const item: Availability = { id, periodId: period.id, friendId: selected === 'self' ? null : selected, start, end, source: value(f, 'source') as Availability['source'], confidence: value(f, 'confidence') as Availability['confidence'], kind: selected === 'self' ? value(f, 'kind') as Availability['kind'] : 'available', label: value(f, 'label'), location: value(f, 'location'), notes: value(f, 'notes'), expired: f.has('expired') }
+        const ownerPeriod = dialog.item ? data.periods.find(p => p.id === dialog.item?.periodId) : period
+        if (!ownerPeriod || !inPeriod(ownerPeriod, start, end)) { setFormError('Choose times within the original planning period.'); return }
+        const item: Availability = { id, periodId: ownerPeriod.id, friendId: selected === 'self' ? null : selected, start, end, source: value(f, 'source') as Availability['source'], confidence: value(f, 'confidence') as Availability['confidence'], kind: selected === 'self' ? value(f, 'kind') as Availability['kind'] : 'available', label: value(f, 'label'), location: value(f, 'location'), notes: value(f, 'notes'), expired: f.has('expired') }
         if (item.friendId && !friend(item.friendId)) { setFormError('Choose a friend.'); return }
         next.availability = [...data.availability.filter(x => x.id !== id), item]
       } else {
-        const item: Meeting = { id, periodId: period.id, friendId: value(f, 'friendId'), start, end, location: value(f, 'location'), notes: value(f, 'notes'), status: value(f, 'status') as Meeting['status'], title: value(f, 'title'), travelTimeMinutes: Number(value(f, 'travelTimeMinutes') || 0) }
-        if (!friend(item.friendId)) { setFormError('Choose a friend.'); return }
+        const primary = value(f, 'friendId')
+        const ids = [...new Set([primary, ...f.getAll('additionalFriendId').map(String)])].filter(Boolean)
+        const item: Meeting = { id, periodId: period.id, friendId: primary, ...(ids.length > 1 ? { friendIds: ids } : {}), start, end, location: value(f, 'location'), notes: value(f, 'notes'), status: value(f, 'status') as Meeting['status'], title: value(f, 'title'), travelTimeMinutes: Number(value(f, 'travelTimeMinutes') || 0) }
+        if (!primary || ids.some(friendId => !friend(friendId))) { setFormError('Choose a friend.'); return }
+        if (ids.length > 1) next.version = 2
         next.meetings = [...data.meetings.filter(x => x.id !== id), item]
       }
     }
@@ -147,14 +181,14 @@ function App() {
   if (!ready) return <div className="loading">Opening Meet-up Planner…</div>
 
   const planCard = (m: Meeting) => {
-    const person = friend(m.friendId), warnings = meetingWarnings(m, data, buffer)
+    const person = friend(m.friendId), names = meetingFriendIds(m).map(id => friend(id)?.name ?? 'Unknown friend').join(', '), warnings = meetingWarnings(m, data, buffer)
     return <article className="plan-card" key={m.id}>
       <div className="plan-time"><strong>{timeLabel(m.start)}</strong><span>to {timeLabel(m.end)}</span></div>
       <div className="plan-divider" style={{ background: person?.colour }} />
       <Avatar friend={person} />
-      <div className="plan-content"><div className="plan-title"><strong>{person?.name ?? 'Unknown friend'}{m.title && ` · ${m.title}`}</strong><span className={`status ${m.status}`}>{m.status === 'confirmed' && <Check size={12} />}{m.status.replace('-', ' ')}</span></div><div className="muted small">{m.location ? <><MapPin size={14} /> {m.location}</> : 'Location to be decided'}{m.travelTimeMinutes ? ` · ${m.travelTimeMinutes} min travel` : ''}</div>{m.notes && <p className="plan-note">{m.notes}</p>}{warnings.length > 0 && <div className="warning"><AlertTriangle size={14} /> {warnings.join(' · ')}</div>}</div>
+      <div className="plan-content"><div className="plan-title"><strong>{names}{m.title && ` · ${m.title}`}</strong><span className={`status ${m.status}`}>{m.status === 'confirmed' && <Check size={12} />}{m.status.replace('-', ' ')}</span></div><div className="muted small">{m.location ? <><MapPin size={14} /> {m.location}</> : 'Location to be decided'}{m.travelTimeMinutes ? ` · ${m.travelTimeMinutes} min travel` : ''}</div>{m.notes && <p className="plan-note">{m.notes}</p>}{warnings.length > 0 && <div className="warning"><AlertTriangle size={14} /> {warnings.join(' · ')}</div>}</div>
       <button className="icon-button" aria-label="Duplicate plan" onClick={() => open({ kind: 'meeting', seed: m })}><Plus size={16} /></button>
-      <button className="icon-button" aria-label={`Edit plan with ${person?.name ?? 'friend'}`} onClick={() => open({ kind: 'meeting', item: m })}><Pencil size={16} /></button>
+      <button className="icon-button" aria-label={`Edit plan with ${names}`} onClick={() => open({ kind: 'meeting', item: m })}><Pencil size={16} /></button>
       <button className="icon-button" aria-label="Delete plan" onClick={() => remove('meeting', m.id)}><Trash2 size={16} /></button>
     </article>
   }
@@ -172,7 +206,7 @@ function App() {
         {error && <div className="error-banner" role="alert">{error}</div>}
         {page === 'overview' && <><div className="page-heading"><div><div className="eyebrow">A LITTLE MORE TOGETHER TIME <span>✦</span></div><h1>Good times, made <em>simple.</em></h1><p>Make room for the people who matter most.</p></div>{period && <Button onClick={() => open({ kind: 'meeting' })}><Plus size={17} /> New plan</Button>}</div>
           {!period ? <div className="welcome-panel"><div className="welcome-art"><span>✳</span><Heart size={46} fill="currentColor" /><span>✦</span></div><div><div className="eyebrow">LET'S GET STARTED</div><h2>Make some room for connection.</h2><p>Welcome to Meet-up Planner. Start with a planning period, then bring your favourite people into the picture.</p><Button onClick={() => open({ kind: 'period' })}><Plus size={17} /> Create a planning period</Button></div></div> : <>
-            <section className="period-banner"><div><div className="eyebrow">CURRENTLY PLANNING <span>✦</span></div><h2>{period.name}</h2><p><CalendarDays size={16} /> {dateLabel(period.start, 'd MMM')} – {dateLabel(period.end, 'd MMM yyyy')}</p></div><div className="banner-actions"><button className="icon-button" aria-label="Edit period" onClick={() => open({ kind: 'period', item: period })}><Pencil size={17} /></button><button className="icon-button" aria-label="Delete period" onClick={() => remove('period', period.id)}><Trash2 size={17} /></button></div><div className="banner-flower">✳</div></section>
+            <section className="period-banner"><div><div className="eyebrow">CURRENTLY PLANNING <span>✦</span></div><h2>{period.name}</h2><p><CalendarDays size={16} /> {period.start && period.end ? `${dateLabel(period.start, 'd MMM')} – ${dateLabel(period.end, 'd MMM yyyy')}` : 'Indefinite'}{period.location && ` · ${period.location}`}</p></div><div className="banner-actions"><button className="icon-button" aria-label="Edit period" onClick={() => open({ kind: 'period', item: period })}><Pencil size={17} /></button><button className="icon-button" aria-label="Delete period" onClick={() => remove('period', period.id)}><Trash2 size={17} /></button></div><div className="banner-flower">✳</div></section>
             <div className="stats"><div className="stat"><span>YOUR PEOPLE</span><strong>{data.friends.length.toString().padStart(2, '0')}</strong><small>friends on your list</small><Users size={20} /></div><div className="stat"><span>PLANS MADE</span><strong>{meetings.length.toString().padStart(2, '0')}</strong><small>{meetings.filter(m => m.status === 'confirmed').length} confirmed</small><CalendarDays size={20} /></div><div className="stat"><span>STILL TO PLAN</span><strong>{unplanned.length.toString().padStart(2, '0')}</strong><small>people to catch up with</small><Heart size={20} /></div><div className="stat"><span>NEED A LOOK</span><strong>{conflictCount.toString().padStart(2, '0')}</strong><small>plans with warnings</small><AlertTriangle size={20} /></div></div>
             <div className="overview-grid dashboard-agenda">
               <section className="dashboard-panel"><div className="section-heading"><div><div className="eyebrow">ON THE CALENDAR</div><h2>Today</h2></div></div>{dashboard.today.length ? dashboard.today.map(planCard) : <p className="muted small">No meet-ups planned for today.</p>}
@@ -183,35 +217,28 @@ function App() {
             <div className="overview-grid"><section><div className="section-heading"><div><div className="eyebrow">THE GOOD STUFF</div><h2>Upcoming plans</h2></div><button className="text-button" onClick={() => setPage('itinerary')}>View itinerary →</button></div>{meetings.length ? groupedPlans(meetings.slice(0, 4)) : <Empty title="Nothing on the calendar yet">Your plans will find their place here.<br />Start with a friend and a little free time.<div className="empty-action"><Button secondary onClick={() => open({ kind: 'meeting' })}><Plus size={16} /> Add a plan</Button></div></Empty>}</section>
               <section className="people-panel"><div className="section-heading"><div><div className="eyebrow">DON'T FORGET</div><h2>Still to see</h2></div><button className="text-button" onClick={() => setPage('friends')}>All friends →</button></div>{unplanned.length ? <div className="people-list">{unplanned.slice(0, 5).map(f => <div className="person-row" key={f.id}><Avatar friend={f} /><div><strong>{f.name}</strong><small>{f.location || 'A catch-up awaits'}</small></div><span className="priority">{f.priority}</span></div>)}</div> : <p className="muted small">{data.friends.length ? 'Everyone has a plan. Lovely!' : 'Add friends to start making plans.'}</p>}<button className="add-link" onClick={() => open({ kind: 'friend' })}><Plus size={16} /> Add a friend</button></section></div>
           </>}</>}
-        {page === 'friends' && <><div className="page-heading"><div><div className="eyebrow">YOUR FAVOURITE PEOPLE</div><h1>Friends <em>first.</em></h1><p>Keep the people you want to see close at hand.</p></div><Button onClick={() => open({ kind: 'friend' })}><Plus size={17} /> Add friend</Button></div><label className="filter-label">Show <select value={friendFilter} onChange={e => setFriendFilter(e.target.value)}><option value="active">Active friends</option><option value="unbooked">Not confirmed</option><option value="confirmed">Confirmed</option><option value="awaiting-reply">Awaiting reply</option><option value="must-see">Must-see</option><option value="high">High priority</option><option value="normal">Normal priority</option><option value="low">Low priority</option><option value="archived">Archived</option></select></label>{data.friends.length ? <div className="friend-grid">{data.friends.filter(f => {
-          const own = meetings.filter(m => m.friendId === f.id)
-          if (friendFilter === 'archived') return f.archived
-          if (f.archived) return false
-          if (friendFilter === 'active') return true
-          if (friendFilter === 'unbooked') return !own.some(m => m.status === 'confirmed')
-          if (friendFilter === 'confirmed' || friendFilter === 'awaiting-reply') return own.some(m => m.status === friendFilter)
-          return f.priority === friendFilter
-        }).map(f => { const own = meetings.filter(m => m.friendId === f.id); const confirmed = own.filter(m => m.status === 'confirmed').length; return <article className="friend-card" key={f.id}><div className="friend-card-top"><Avatar friend={f} size="large" /><div><button className="icon-button" aria-label={`Edit ${f.name}`} onClick={() => open({ kind: 'friend', item: f })}><Pencil size={16} /></button><button className="icon-button" aria-label={`Delete ${f.name}`} onClick={() => remove('friend', f.id)}><Trash2 size={16} /></button></div></div><h3>{f.name}</h3><span className="priority">{f.priority}</span> <span className="priority">{confirmed ? 'Confirmed' : 'Not confirmed'}</span><p className="muted small">{f.location || 'No location added'}</p><p className="muted small">{confirmed} confirmed · {own.filter(m => m.status === 'tentative').length} tentative · {own.filter(m => ['idea', 'proposed', 'awaiting-reply'].includes(m.status)).length} options</p>{f.notes && <p className="friend-notes">{f.notes}</p>}<button className="add-link" onClick={() => void persist({ ...data, friends: data.friends.map(person => person.id === f.id ? { ...person, archived: !person.archived, updatedAt: new Date().toISOString() } : person) })}>{f.archived ? 'Restore friend' : 'Archive friend'}</button></article> })}</div> : <Empty title="Your people go here">Add friends to Meet-up Planner and start making time for them.</Empty>}</>}
+        {page === 'friends' && <><div className="page-heading"><div><div className="eyebrow">YOUR FAVOURITE PEOPLE</div><h1>Friends <em>first.</em></h1><p>Keep the people you want to see close at hand.</p></div><Button onClick={() => open({ kind: 'friend' })}><Plus size={17} /> Add friend</Button></div><label className="filter-label">Show <select value={friendFilter} onChange={e => setFriendFilter(e.target.value)}><option value="active">Active friends</option><option value="unbooked">Not confirmed</option><option value="confirmed">Confirmed</option><option value="awaiting-reply">Awaiting reply</option><option value="must-see">Must-see</option><option value="high">High priority</option><option value="normal">Normal priority</option><option value="low">Low priority</option><option value="archived">Archived</option></select></label>{period?.location && <div><label className="checkbox-label"><input type="checkbox" checked={locationFilter} onChange={e => setLocationFilter(e.target.checked)} /> Match {period.location}</label>{locationFilter && <label className="checkbox-label"><input type="checkbox" checked={includeUnknownLocation} onChange={e => setIncludeUnknownLocation(e.target.checked)} /> Include friends without a location</label>}</div>}{!visibleFriends.length && data.friends.length > 0 && <p>No friends match these filters. {locationFilter && period?.location && <button className="text-button" onClick={() => setLocationFilter(false)}>Show all locations</button>}</p>}{data.friends.length ? <div className="friend-grid">{visibleFriends.map(f => { const own = meetings.filter(m => meetingFriendIds(m).includes(f.id)); const confirmed = own.filter(m => m.status === 'confirmed').length; return <article className="friend-card" key={f.id}><div className="friend-card-top"><Avatar friend={f} size="large" /><div><button className="icon-button" aria-label={`Edit ${f.name}`} onClick={() => open({ kind: 'friend', item: f })}><Pencil size={16} /></button><button className="icon-button" aria-label={`Delete ${f.name}`} onClick={() => remove('friend', f.id)}><Trash2 size={16} /></button></div></div><h3>{f.name}</h3><span className="priority">{f.priority}</span> <span className="priority">{confirmed ? 'Confirmed' : 'Not confirmed'}</span><p className="muted small">{f.location || 'No location added'}</p><p className="muted small">{confirmed} confirmed · {own.filter(m => m.status === 'tentative').length} tentative · {own.filter(m => ['idea', 'proposed', 'awaiting-reply'].includes(m.status)).length} options</p>{f.notes && <p className="friend-notes">{f.notes}</p>}<button className="add-link" onClick={() => void persist({ ...data, friends: data.friends.map(person => person.id === f.id ? { ...person, archived: !person.archived, updatedAt: new Date().toISOString() } : person) })}>{f.archived ? 'Restore friend' : 'Archive friend'}</button></article> })}</div> : <Empty title="Your people go here">Add friends to Meet-up Planner and start making time for them.</Empty>}</>}
         {page === 'availability' && <><div className="page-heading"><div><div className="eyebrow">FIND THE RIGHT MOMENT</div><h1>A little <em>availability.</em></h1><p>Keep track of when you and your friends are free.</p></div>{period && <Button onClick={() => open({ kind: 'availability' })}><Plus size={17} /> Add time block</Button>}</div>
           {!period ? <Empty title="Start with a planning period">Create a period to add availability.</Empty> : blocks.length ? <>
             <div className="list-panel">{blocks.map(b => <div className="availability-row" key={b.id}><Avatar friend={b.friendId ? friend(b.friendId) : undefined} /><div className="grow">
               <strong>{b.friendId ? friend(b.friendId)?.name ?? 'Unknown friend' : 'You'} {b.label && `· ${b.label}`}</strong>
               <p className="muted small">{dateLabel(b.start)} · {timeLabel(b.start)} – {b.start.slice(0, 10) !== b.end.slice(0, 10) && `${dateLabel(b.end)} · `}{timeLabel(b.end)}</p>
               <p className="muted small">{b.expired ? 'No longer relevant' : b.friendId ? `${b.confidence ?? 'likely'} · ${b.source ?? 'Other'}` : b.kind ?? 'available'}{b.notes && ` · ${b.notes}`}</p>
+              {b.periodId !== period.id && <p className="muted small">Shared from {data.periods.find(p => p.id === b.periodId)?.name ?? 'another period'}</p>}
             </div>{!b.expired && (!b.kind || b.kind === 'available') && <button className="icon-button" aria-label="Create plan from availability" onClick={() => open({ kind: 'meeting', seed: { start: b.start, end: b.end, friendId: b.friendId ?? undefined } })}><Plus size={16} /></button>}<button className="icon-button" aria-label="Edit availability" onClick={() => open({ kind: 'availability', item: b })}><Pencil size={16} /></button><button className="icon-button" aria-label="Delete availability" onClick={() => remove('availability', b.id)}><Trash2 size={16} /></button></div>)}</div>
-            <div className="gaps"><div className="section-heading"><div><div className="eyebrow">A LITTLE SPACE TO BREATHE</div><h2>Your open gaps</h2></div></div>{freeGaps(blocks, meetings).length ? <div className="list-panel">{freeGaps(blocks, meetings).map((gap, i) => <div className="availability-row" key={`${gap.start}-${gap.end}-${i}`}><Clock3 size={18} color="#c57d63" /><div><strong>{dateLabel(gap.start)}</strong><p className="muted small">{timeLabel(gap.start)} – {gap.start.slice(0, 10) !== gap.end.slice(0, 10) && `${dateLabel(gap.end)} · `}{timeLabel(gap.end)}</p></div></div>)}</div> : <p className="muted small">No open gaps in your recorded availability.</p>}</div>
+            <div className="gaps"><div className="section-heading"><div><div className="eyebrow">A LITTLE SPACE TO BREATHE</div><h2>Your open gaps</h2></div></div>{freeGaps(data.availability, data.meetings, period).length ? <div className="list-panel">{freeGaps(data.availability, data.meetings, period).map((gap, i) => <div className="availability-row" key={`${gap.start}-${gap.end}-${i}`}><Clock3 size={18} color="#c57d63" /><div><strong>{dateLabel(gap.start)}</strong><p className="muted small">{timeLabel(gap.start)} – {gap.start.slice(0, 10) !== gap.end.slice(0, 10) && `${dateLabel(gap.end)} · `}{timeLabel(gap.end)}</p></div></div>)}</div> : <p className="muted small">No open gaps in your recorded availability.</p>}</div>
           </> : <Empty title="Room for possibility">Add your free time and the availability friends have shared with you.</Empty>}
         </>}
-        {page === 'calendar' && <><div className="page-heading"><div><div className="eyebrow">A WEEK AT A TIME</div><h1>Your <em>calendar.</em></h1><p>See your time, their time and your plans together.</p></div></div>{period ? <Calendar key={period.id} period={period} friends={data.friends} blocks={blocks} meetings={meetings} onCreate={start => open({ kind: 'meeting', seed: { start, end: format(addHours(parseISO(start), 1), "yyyy-MM-dd'T'HH:mm") } })} onEditMeeting={item => open({ kind: 'meeting', item })} onEditBlock={item => open({ kind: 'availability', item })} onMove={item => void persist({ ...data, meetings: data.meetings.map(m => m.id === item.id ? item : m) })} /> : <Empty title="Start with a planning period">Create a period to see your calendar.</Empty>}</>}
+        {page === 'calendar' && <><div className="page-heading"><div><div className="eyebrow">A WEEK AT A TIME</div><h1>Your <em>calendar.</em></h1><p>See your time, their time and your plans together.</p></div></div>{period ? <Calendar key={period.id} period={period} friends={data.friends} blocks={blocks} meetings={meetings} data={data} buffer={buffer} onCreate={start => open({ kind: 'meeting', seed: { start, end: format(addHours(parseISO(start), 1), "yyyy-MM-dd'T'HH:mm") } })} onEditMeeting={item => open({ kind: 'meeting', item })} onEditBlock={item => open({ kind: 'availability', item })} onMove={item => void persist({ ...data, meetings: data.meetings.map(m => m.id === item.id ? item : m) })} /> : <Empty title="Start with a planning period">Create a period to see your calendar.</Empty>}</>}
         {page === 'itinerary' && <><div className="page-heading"><div><div className="eyebrow">ALL TOGETHER NOW</div><h1>Your <em>itinerary.</em></h1><p>Confirmed plans, all in one place.</p></div>{period && <Button secondary onClick={() => void navigator.clipboard.writeText(itineraryText(meetings, data))}>Copy itinerary</Button>}</div>{!period ? <Empty title="Start with a planning period">Create a period to start your itinerary.</Empty> : meetings.some(m => m.status === 'confirmed') ? groupedPlans(meetings.filter(m => m.status === 'confirmed')) : <Empty title="The best plans start here">Confirmed plans will appear here.</Empty>}</>}
         <div hidden={page !== 'settings'}>{installReturn ? <p role="status">Finishing your GitHub connection…</p> : <>{installError && <p className="form-error" role="alert">{installError}</p>}<SettingsPage data={data} save={persist} buffer={buffer} setBuffer={setBuffer} online={online} onSyncStatus={setSyncStatus} /></>}</div>
       </main><footer>Made for more moments together <span>♥</span></footer>
     </div>
     <nav className="mobile-nav" aria-label="Main navigation">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={19} /><span>{label}</span></button>)}</nav>
     {dialog && <Modal title={`${dialog.item ? 'Edit' : 'Add'} ${dialog.kind === 'availability' ? 'availability' : dialog.kind === 'meeting' ? 'a plan' : dialog.kind === 'period' ? 'planning period' : 'a friend'}`} onClose={() => setDialog(null)}><form onSubmit={e => void submit(e)} className="form">
-      {dialog.kind === 'period' && <><label>Period name<input name="name" required maxLength={100} defaultValue={dialog.item?.name} placeholder="e.g. Festive trip" /></label><div className="form-grid"><label>Start date<input type="date" name="start" required defaultValue={dialog.item?.start} /></label><label>End date<input type="date" name="end" required defaultValue={dialog.item?.end} /></label></div></>}
+      {dialog.kind === 'period' && <><label>Period name<input name="name" required maxLength={100} defaultValue={dialog.item?.name} placeholder="e.g. Festive trip" /></label><label className="checkbox-label"><input type="checkbox" checked={periodIndefinite} onChange={e => setPeriodIndefinite(e.target.checked)} /> Indefinite time range</label>{!periodIndefinite && <div className="form-grid"><label>Start date<input type="date" name="start" required defaultValue={dialog.item?.start} /></label><label>End date<input type="date" name="end" required defaultValue={dialog.item?.end} /></label></div>}<label>Location <span>(optional)</span><input name="location" maxLength={150} defaultValue={dialog.item?.location} placeholder="e.g. Slovakia" /></label></>}
       {dialog.kind === 'friend' && <><label>Name<input name="name" required maxLength={100} defaultValue={dialog.item?.name} placeholder="Their name" /></label><div className="form-grid"><label>Priority<select name="priority" defaultValue={dialog.item?.priority ?? 'normal'}><option value="must-see">Must-see</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select></label><label>Colour<input type="color" name="colour" defaultValue={dialog.item?.colour ?? colours[data.friends.length % colours.length]} /></label></div><label>Location <span>(optional)</span><input name="location" maxLength={150} defaultValue={dialog.item?.location} placeholder="Where are they based?" /></label><label>Last contacted <span>(optional)</span><input name="lastContacted" type="date" defaultValue={dialog.item?.lastContacted} /></label><label>Notes <span>(optional)</span><textarea name="notes" maxLength={2000} defaultValue={dialog.item?.notes} placeholder="Anything you'd like to remember" /></label></>}
-      {(dialog.kind === 'availability' || dialog.kind === 'meeting') && <><label>{dialog.kind === 'availability' ? 'Whose availability?' : 'Who are you seeing?'}<select name="friendId" required defaultValue={dialog.item?.friendId ?? (dialog.kind === 'meeting' ? dialog.seed?.friendId ?? '' : 'self')}>{dialog.kind === 'availability' ? <option value="self">You</option> : <option value="">Choose a friend</option>}{data.friends.filter(f => !f.archived || f.id === dialog.item?.friendId).map(f => <option value={f.id} key={f.id}>{f.name}</option>)}</select></label>{!data.friends.length && dialog.kind === 'meeting' && <p className="muted small">Add a friend before creating a plan.</p>}<div className="form-grid"><label>Starts<input name="start" type="datetime-local" required defaultValue={dialog.item?.start ?? (dialog.kind === 'meeting' ? dialog.seed?.start : undefined)} min={`${period?.start}T00:00`} max={`${period?.end}T23:59`} /></label><label>Ends<input name="end" type="datetime-local" required defaultValue={dialog.item?.end ?? (dialog.kind === 'meeting' ? dialog.seed?.end : undefined)} min={`${period?.start}T00:00`} max={`${period?.end}T23:59`} /></label></div></>}
+      {(dialog.kind === 'availability' || dialog.kind === 'meeting') && <><label>{dialog.kind === 'availability' ? 'Whose availability?' : 'Who are you seeing?'}<select name="friendId" required defaultValue={dialog.item?.friendId ?? (dialog.kind === 'meeting' ? dialog.seed?.friendId ?? '' : 'self')}>{dialog.kind === 'availability' ? <option value="self">You</option> : <option value="">Choose a friend</option>}{data.friends.filter(f => !f.archived || f.id === dialog.item?.friendId || (dialog.kind === 'meeting' && (f.id === dialog.seed?.friendId || (dialog.item?.friendIds ?? dialog.seed?.friendIds ?? []).includes(f.id)))).map(f => <option value={f.id} key={f.id}>{f.name}</option>)}</select></label>{dialog.kind === 'meeting' && <details><summary>Add more friends</summary><fieldset><legend>Additional friends</legend>{data.friends.filter(f => !f.archived || (dialog.item?.friendIds ?? dialog.seed?.friendIds ?? []).includes(f.id)).map(f => <label className="checkbox-label" key={f.id}><input type="checkbox" name="additionalFriendId" value={f.id} defaultChecked={(dialog.item?.friendIds ?? dialog.seed?.friendIds ?? []).slice(1).includes(f.id)} /> {f.name}</label>)}</fieldset></details>}{!data.friends.length && dialog.kind === 'meeting' && <p className="muted small">Add a friend before creating a plan.</p>}<div className="form-grid"><label>Starts<input name="start" type="datetime-local" required defaultValue={dialog.item?.start ?? (dialog.kind === 'meeting' ? dialog.seed?.start : undefined)} /></label><label>Ends<input name="end" type="datetime-local" required defaultValue={dialog.item?.end ?? (dialog.kind === 'meeting' ? dialog.seed?.end : undefined)} /></label></div></>}
       {dialog.kind === 'availability' && <><div className="form-grid"><label>Source<select name="source" defaultValue={dialog.item?.source ?? 'Other'}><option>WhatsApp</option><option>iMessage</option><option>In person</option><option>Other</option></select></label><label>Confidence<select name="confidence" defaultValue={dialog.item?.confidence ?? 'likely'}><option value="firm">Firm</option><option value="likely">Likely</option><option value="maybe">Maybe</option></select></label></div><label>My block type<select name="kind" defaultValue={dialog.item?.kind ?? 'available'}><option value="available">Available</option><option value="reserved">Reserved</option><option value="busy">Busy</option><option value="unavailable">Unavailable</option></select></label><label>Label<input name="label" defaultValue={dialog.item?.label} placeholder="e.g. Tuesday evening" /></label><label>Location<input name="location" defaultValue={dialog.item?.location} /></label><label>Notes<textarea name="notes" defaultValue={dialog.item?.notes} /></label><label className="checkbox-label"><input type="checkbox" name="expired" defaultChecked={dialog.item?.expired} /> No longer relevant</label></>}
       {dialog.kind === 'meeting' && <><label>Activity<input name="title" defaultValue={dialog.item?.title ?? dialog.seed?.title} placeholder="Coffee, lunch, a walk…" /></label><label>Status<select name="status" defaultValue={dialog.item?.status ?? dialog.seed?.status ?? 'tentative'}><option value="idea">Idea</option><option value="proposed">Proposed</option><option value="awaiting-reply">Awaiting reply</option><option value="tentative">Tentative</option><option value="confirmed">Confirmed</option><option value="cancelled">Cancelled</option></select></label><label>Where? <span>(optional)</span><input name="location" maxLength={150} defaultValue={dialog.item?.location ?? dialog.seed?.location} placeholder="A favourite café, perhaps?" /></label><label>Travel time in minutes<input name="travelTimeMinutes" type="number" min="0" max="1440" defaultValue={dialog.item?.travelTimeMinutes ?? dialog.seed?.travelTimeMinutes ?? 0} /></label><label>Notes <span>(optional)</span><textarea name="notes" maxLength={2000} defaultValue={dialog.item?.notes ?? dialog.seed?.notes} /></label><p className="form-hint">We'll flag overlapping plans, travel buffers, and times outside recorded availability.</p></>}
       {formError && <p className="form-error" role="alert">{formError}</p>}<div className="form-actions"><Button secondary onClick={() => setDialog(null)}>Cancel</Button><Button type="submit">Save {dialog.kind === 'meeting' ? 'plan' : dialog.kind}</Button></div>
@@ -220,7 +247,7 @@ function App() {
 }
 
 function itineraryText(meetings: Meeting[], data: PlannerData) {
-  return meetings.filter(m => m.status === 'confirmed').sort((a, b) => a.start.localeCompare(b.start)).map(m => `${dateLabel(m.start, 'EEEE, d MMMM yyyy')} · ${timeLabel(m.start)}–${timeLabel(m.end)}\n${data.friends.find(f => f.id === m.friendId)?.name ?? 'Unknown friend'}${m.title ? ` · ${m.title}` : ''}${m.location ? ` · ${m.location}` : ''}${m.travelTimeMinutes ? ` · ${m.travelTimeMinutes} min travel` : ''}${m.notes ? `\n${m.notes}` : ''}`).join('\n\n')
+  return meetings.filter(m => m.status === 'confirmed').sort((a, b) => a.start.localeCompare(b.start)).map(m => `${dateLabel(m.start, 'EEEE, d MMMM yyyy')} · ${timeLabel(m.start)}–${timeLabel(m.end)}\n${meetingFriendIds(m).map(id => data.friends.find(f => f.id === id)?.name ?? 'Unknown friend').join(', ')}${m.title ? ` · ${m.title}` : ''}${m.location ? ` · ${m.location}` : ''}${m.travelTimeMinutes ? ` · ${m.travelTimeMinutes} min travel` : ''}${m.notes ? `\n${m.notes}` : ''}`).join('\n\n')
 }
 
 function download(content: string, name: string, type: string) {
@@ -361,11 +388,14 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
       const currentData = usePlanner.getState().data
       let foundConflict = false
       if (!remote) {
+        await savePendingUpload({ id: `direct:${key}`, localBase: currentData, data: currentData, baselineSha: localStorage.getItem(key) ?? undefined })
         const sha = await writeCloud(accessToken, syncTarget, currentData)
         localStorage.setItem(key, sha)
+        await clearPendingUpload(`direct:${key}`)
         syncedData.current = JSON.stringify(currentData)
         setMessage(repository.created ? 'Private repository created and your planner initialized.' : 'Your private repository is ready and the planner file was initialized.')
       } else {
+        await acknowledgeDirectUpload(key, remote)
         const knownSha = localStorage.getItem(key)
         const localEmpty = !currentData.friends.length && !currentData.periods.length && !currentData.availability.length && !currentData.meetings.length
         const remoteEmpty = !remote.data.friends.length && !remote.data.periods.length && !remote.data.availability.length && !remote.data.meetings.length
@@ -444,8 +474,10 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
   }, [token])
   const sync = async (direction: 'pull' | 'push') => {
     if (!token || !owner || !repo) { setMessage('Connect the GitHub App before syncing.'); return }
+    if (syncing.current) { setMessage('Sync is already in progress.'); return }
     if (direction === 'pull' && !window.confirm('Replace the planner on this device with the GitHub copy?')) return
     if (direction === 'pull') offerPlannerBackup(data, 'before-pull')
+    syncing.current = true
     setBusy(true); setMessage('')
     setConflict(null)
     const syncTarget = target(), key = shaKey(syncTarget)
@@ -467,8 +499,7 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
         onSyncStatus('Synced with GitHub')
         setMessage('Cloud copy downloaded to this device.')
       } else {
-        const sha = await writeCloud(token, syncTarget, data, localStorage.getItem(key) ?? undefined)
-        localStorage.setItem(key, sha)
+        await pushDirect(token, syncTarget, key, data)
         syncedData.current = JSON.stringify(data)
         onSyncStatus('Synced with GitHub')
         setMessage('Your planner was saved to GitHub.')
@@ -490,11 +521,13 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
         onSyncStatus(e instanceof GitHubPermissionError ? 'GitHub permission issue · Check the app installation and permissions.' : 'Sync failed · Your changes remain saved locally.')
       }
     }
-    finally { setBusy(false) }
+    finally { syncing.current = false; setBusy(false) }
   }
   const resolveConflict = async (choice: 'cloud' | 'local') => {
     if (!conflict || !token) return
+    if (syncing.current) { setMessage('Sync is already in progress.'); return }
     if (!window.confirm(choice === 'local' ? 'Replace the GitHub copy with the planner on this device?' : 'Replace the planner on this device with the GitHub copy?')) return
+    syncing.current = true
     setBusy(true); setMessage('')
     const syncTarget = target(), key = shaKey(syncTarget)
     try {
@@ -508,8 +541,10 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
         onSyncStatus('Synced with GitHub')
       } else {
         offerPlannerBackup(conflict.data, 'before-cloud-overwrite')
+        await savePendingUpload({ id: `direct:${key}`, localBase: data, data, baselineSha: localStorage.getItem(key) ?? undefined })
         const sha = await writeCloud(token, syncTarget, data, conflict.sha)
         localStorage.setItem(key, sha)
+        await clearPendingUpload(`direct:${key}`)
         syncedData.current = JSON.stringify(data)
         setMessage('Your device copy replaced the cloud copy.')
         onSyncStatus('Synced with GitHub')
@@ -531,7 +566,7 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
         setMessage(e instanceof Error ? e.message : 'Could not resolve the sync conflict.')
         if (e instanceof GitHubPermissionError) onSyncStatus('GitHub permission issue · Check the app installation and permissions.')
       }
-    } finally { setBusy(false) }
+    } finally { syncing.current = false; setBusy(false) }
   }
   useEffect(() => {
     if (!token || !owner || !repo) return
@@ -547,8 +582,10 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
     }
 
     let timer: number
+    let cancelled = false
     const syncTarget = target(), key = shaKey(syncTarget)
     const attemptSync = async () => {
+      if (cancelled) return
       if (syncing.current) {
         timer = window.setTimeout(() => void attemptSync(), 1000)
         return
@@ -557,13 +594,13 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
       setBusy(true)
       onSyncStatus('Syncing changes to GitHub…')
       try {
-        const sha = await writeCloud(token, syncTarget, data, localStorage.getItem(key) ?? undefined)
-        localStorage.setItem(key, sha)
+        await pushDirect(token, syncTarget, key, data)
         syncedData.current = snapshot
         retryDelay.current = 5000
         rememberTarget()
-        onSyncStatus('Synced with GitHub')
+        if (!cancelled) onSyncStatus(JSON.stringify(usePlanner.getState().data) === snapshot ? 'Synced with GitHub' : 'Saved locally · Syncing shortly…')
       } catch (e) {
+        if (cancelled) return
         if (e instanceof GitHubAuthError) {
           setToken('')
           setMessage(e.message)
@@ -595,7 +632,7 @@ function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: Planne
     }
     onSyncStatus('Saved locally · Syncing shortly…')
     timer = window.setTimeout(() => void attemptSync(), 2000)
-    return () => window.clearTimeout(timer)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
   return <div className="form">
         {!token && !authenticating && !needsInstallation && <p role="status" className="form-hint">Not connected · Your planner stays on this device.</p>}

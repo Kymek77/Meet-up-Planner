@@ -92,6 +92,15 @@ describe('mergePlannerData', () => {
     expect(result).toEqual({ ok: true, data: local })
   })
 
+  it('detects an independently deleted additional group participant', () => {
+    const base: PlannerData = { ...snapshot(), version: 2, friends: [friend('f'), friend('other')] }
+    const local = { ...base, friends: [friend('f')] }
+    const remote = { ...base, meetings: [{ ...meeting('m'), friendIds: ['f', 'other'] }] }
+    expect(mergePlannerData(base, local, remote)).toEqual({ ok: false, conflicts: [
+      { collection: 'meetings', id: 'm', reason: 'missing-friend:other' },
+    ] })
+  })
+
   it.each(['base', 'local', 'remote'] as const)('rejects duplicate IDs in %s even if the schema accepts them', side => {
     const data = snapshot()
     const duplicate = { ...data, periods: [period('p'), period('p')] }

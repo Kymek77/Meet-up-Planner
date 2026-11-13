@@ -4,6 +4,14 @@
 
 Treat the product requirements below as the continuing baseline for all future work on Meet-up Planner. Preserve existing behavior while implementing them, and do not narrow the product to the most recent GitHub sync change. GitHub sign-in uses a GitHub App and a Cloudflare Worker for the web authorization token exchange.
 
+## Planning and sync update
+
+The planner supports indefinite periods, optional period locations and group meet-ups while retaining one-to-one plans. This supersedes the older fixed-period and one-friend-only descriptions below, but does not introduce shared editing or friend accounts. Location filtering uses case-insensitive text matching, not geographic inference. Availability is stored once and displayed across overlapping periods; deleting its owning period removes it everywhere. Plan overlap, personal busy time and travel-buffer checks cover all periods.
+
+Uploads now record their exact snapshot so a later same-device edit can be retained without mistaking the app's own upload for a competing cloud edit. Genuine remote divergence still requires conflict handling. Version 1 snapshots remain readable; indefinite periods, period locations and group plans require version 2. Export a backup and update all devices and installed PWAs before using those features. Older app versions cannot read version 2 and must not overwrite it. These changes have not been independently verified in a live GitHub deployment; retain the connection and deployment checks in the latest connection-flow update below.
+
+Local validation passed: 101 tests, lint, production build and `git diff --check`. Browser checks with synthetic data covered indefinite period creation, group-plan duplication, shared availability editing, location filtering, cross-period warnings and a 375px layout. Sync race tests use mocked GitHub responses; after deployment, verify both connection modes with test data, including repeated moves during upload, interrupted sync and genuinely conflicting edits from two devices. Preserve backups and update every device before enabling version 2 features.
+
 ## Latest connection-flow update
 
 Connect GitHub now authorizes first in both modes, checks the authenticated personal installation, and starts installation only if needed. A validated return continues authorization; a failed installation is not automatically retried in a loop. The alternate-origin and device-code paths retain explicit installation recovery. Connection mode tradeoffs and repository access choices are explained within Save and sync. GitHub may require an existing selection for selected-repository installation; it also automatically grants access to repositories the app creates, so all-repository access is not universally required.
