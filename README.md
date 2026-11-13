@@ -1,6 +1,6 @@
 # Meet-up Planner
 
-A personal, local-first planner for arranging one-to-one meet-ups. Friends do not need accounts. Planning data stays in this browser's IndexedDB unless you explicitly export it or push it to GitHub.
+A personal, local-first planner for arranging meet-ups, usually one-to-one. Friends do not need accounts. Planning data stays in this browser's IndexedDB unless you explicitly export it or push it to GitHub.
 
 ## Run locally
 
@@ -14,13 +14,17 @@ npm run lint
 npm run build
 ```
 
-Create a planning period, add friends and record their availability and your own. The calendar shows time blocks and plans; click an empty slot to create a plan, or drag an existing plan to another hour on desktop. Use the edit form to move a plan on mobile. Warnings are shown for overlaps, busy blocks, availability and travel buffers. The itinerary shows confirmed plans only.
+Create a dated or indefinite planning period, add friends and record their availability and your own. A period can optionally have a location; on the Friends page, filter by that location, optionally including friends without one. Matching is case-insensitive text matching, not geographic inference: include the country in a friend's location if you want to match by country. Add more friends to a plan using **Add more friends**.
+
+The calendar shows time blocks and plans; click an empty slot to create a plan, or drag an existing plan to another hour on desktop. Use the edit form to move a plan on mobile. Plan overlaps, busy blocks and travel buffers are checked across all periods. Availability blocks are shared across overlapping periods: each block is stored once and editing it changes it everywhere it appears. A block still belongs to the period in which it was created; deleting that period deletes its blocks from every view. The itinerary shows confirmed plans only.
 
 The installable PWA caches the application for offline use after its first successful online load. Browser storage can be evicted or cleared, so export backups regularly.
 
 ## Backups
 
 In Settings, download a readable planner backup or a text itinerary. Restore validates the file before asking to replace local data. The app offers a backup download before replacing or deleting a planner; declining the download continues without it. Restoring or deleting data can also sync that change to GitHub. GitHub credentials and repository settings are not included in backups.
+
+Existing version 1 backups and cloud data remain readable. Indefinite periods, period locations and group plans use version 2 data, which older app versions cannot read. Before using these features, export a backup and update or reload the planner on every device and installed PWA. Do not edit the same planner using an older cached version; if a device cannot read the data, update it rather than replacing the cloud copy.
 
 ### Moving from GitHub Pages to meetup-planner.com
 
@@ -54,7 +58,7 @@ If sign-in returns HTTP 502, check that the latest Worker is deployed and inspec
 
 In direct mode the token stays in memory and is cleared on reload or sign-out. Local changes push automatically after a short pause while signed in; pull is manual, and conflicting snapshots require an explicit choice.
 
-Connected mode restores its server session after refresh, checks for changes automatically and merges independent record changes against the last synced baseline. Conflicting edits and deletions require a choice; an on-device safety copy is kept and a downloadable backup is offered before replacement. The baseline and pending local data remain in IndexedDB. Connected sync requires browser support for Web Locks and pauses rather than risk unsafe multi-tab writes if unavailable. Both modes keep local planning available offline.
+Connected mode restores its server session after refresh, checks for changes automatically and merges independent record changes against the last synced baseline. Edits made while an upload is in progress are retained and sent after that upload; interrupted uploads are recognized only when the cloud matches the recorded upload. Genuine conflicting edits and deletions require a choice; an on-device safety copy is kept and a downloadable backup is offered before replacement. The baseline, pending uploads and local data remain in IndexedDB. Connected sync requires browser support for Web Locks and pauses rather than risk unsafe multi-tab writes if unavailable. Both modes keep local planning available offline.
 
 ## GitHub Pages fallback
 

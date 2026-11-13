@@ -116,6 +116,7 @@ export async function readCloud(token: string, target: SyncTarget): Promise<{ da
 }
 
 export async function writeCloud(token: string, target: SyncTarget, data: PlannerData, sha?: string) {
+  if (!isPlannerData(data)) throw new Error('The local planner is invalid and cannot be uploaded.')
   await verifyRepository(token, target.owner, target.repo)
   const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2))
   let binary = ''

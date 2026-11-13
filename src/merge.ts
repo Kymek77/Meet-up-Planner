@@ -1,4 +1,4 @@
-import { isPlannerData, type PlannerData } from './model'
+import { isPlannerData, meetingFriendIds, type PlannerData } from './model'
 
 export type MergeConflict = { collection: string; id: string; reason: string }
 export type MergeResult = { ok: true; data: PlannerData } | { ok: false; conflicts: MergeConflict[] }
@@ -97,7 +97,8 @@ export function mergePlannerData(base: PlannerData, local: PlannerData, remote: 
   for (const collection of ['availability', 'meetings'] as const) {
     for (const record of data[collection]) {
       if (!periodIds.has(record.periodId)) conflicts.push({ collection, id: record.id, reason: `missing-period:${record.periodId}` })
-      if (record.friendId !== null && !friendIds.has(record.friendId)) conflicts.push({ collection, id: record.id, reason: `missing-friend:${record.friendId}` })
+      const participants = 'friendIds' in record ? meetingFriendIds(record) : record.friendId === null ? [] : [record.friendId]
+      for (const id of participants) if (!friendIds.has(id)) conflicts.push({ collection, id: record.id, reason: `missing-friend:${id}` })
     }
   }
   if (!isPlannerData(data) && conflicts.length === 0) conflicts.push({ collection: '$snapshot', id: 'merged', reason: 'invalid-data' })
