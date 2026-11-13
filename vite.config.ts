@@ -7,6 +7,9 @@ export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/',
   plugins: [react(), tailwindcss(), VitePWA({
     registerType: 'autoUpdate',
+    workbox: {
+      navigateFallbackDenylist: [/^\/api(?:\/|$)/],
+    },
     manifest: {
       name: 'Meet-up Planner',
       short_name: 'Meet-up Planner',

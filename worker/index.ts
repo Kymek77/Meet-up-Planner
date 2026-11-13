@@ -1,8 +1,13 @@
-interface Env {
+import { connectedFetch, type ConnectedEnv } from './connected'
+export { SessionStore } from './connected'
+
+export interface Env {
   GITHUB_CLIENT_ID: string
   GITHUB_CLIENT_SECRET: string
   PLANNER_ORIGIN: string
   CALLBACK_URL: string
+  LEGACY_PLANNER_ORIGIN?: string
+  LEGACY_CALLBACK_URL?: string
 }
 
 function logGitHubFailure(category: string, response?: Response, errorCode?: string) {
@@ -16,8 +21,7 @@ function logGitHubFailure(category: string, response?: Response, errorCode?: str
   })
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+export async function legacyFetch(request: Request, env: Env, includeRefresh = false): Promise<Response> {
     const origin = request.headers.get('Origin')
     const headers = new Headers({ 'Cache-Control': 'no-store', 'Vary': 'Origin' })
     if (!env.PLANNER_ORIGIN || origin !== env.PLANNER_ORIGIN) return new Response('Forbidden', { status: 403, headers })
@@ -121,6 +125,23 @@ export default {
       logGitHubFailure('invalid_response', response)
       return error(401)
     }
-    return new Response(JSON.stringify({ access_token: result.access_token }), { headers })
+    return new Response(JSON.stringify(includeRefresh ? result : { access_token: result.access_token }), { headers })
+}
+
+export default {
+  async fetch(request: Request, env: Env & Partial<ConnectedEnv>): Promise<Response> {
+    const path = new URL(request.url).pathname
+    if (path === '/api' || path.startsWith('/api/')) return connectedFetch(request, env as Env & ConnectedEnv)
+    if (['/exchange', '/device-code', '/device-token'].includes(path)) {
+      const origin = request.headers.get('Origin')
+      if (origin && origin === env.APP_ORIGIN && env.CONNECTED_CALLBACK_URL && new URL(request.url).origin === env.APP_ORIGIN) {
+        return legacyFetch(request, { ...env, PLANNER_ORIGIN: env.APP_ORIGIN, CALLBACK_URL: env.CONNECTED_CALLBACK_URL })
+      }
+      if (origin && origin === env.LEGACY_PLANNER_ORIGIN && env.LEGACY_CALLBACK_URL) {
+        return legacyFetch(request, { ...env, PLANNER_ORIGIN: env.LEGACY_PLANNER_ORIGIN, CALLBACK_URL: env.LEGACY_CALLBACK_URL })
+      }
+      return legacyFetch(request, env)
+    }
+    return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 })
   },
 }

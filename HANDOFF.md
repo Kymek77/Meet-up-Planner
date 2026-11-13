@@ -4,6 +4,10 @@
 
 Treat the product requirements below as the continuing baseline for all future work on Meet-up Planner. Preserve existing behavior while implementing them, and do not narrow the product to the most recent GitHub sync change. GitHub sign-in uses a GitHub App and a Cloudflare Worker for the web authorization token exchange.
 
+## Domain migration
+
+The owner has purchased `meetup-planner.com` through Cloudflare. Migration to same-origin Worker hosting and an optional persistent-session sync mode is being prepared; do not assume the new deployment is live. Keep the existing GitHub-only sync mode available without a subscription. Before the origin changes, export local planner data from each device and keep the old site available until the new site is verified. Browser storage does not move between origins.
+
 ## Product purpose
 
 Build a complete, production-quality, mobile-first personal planner for organising multiple one-to-one meet-ups with friends during a fixed period, such as a festive trip. The app is for one user. Friends never sign in, fill in forms, or book slots; the user contacts them through WhatsApp, iMessage, in person, or other channels and enters their availability.
@@ -12,7 +16,7 @@ The experience should feel like a polished, calm, personal planner—not a busin
 
 ## Non-goals
 
-Do not build group availability polls, friend-facing booking pages, shared editing or multi-user collaboration, messaging integrations, calendar OAuth, or a backend planner-data server/database. The Cloudflare Worker is limited to GitHub authentication.
+Do not build group availability polls, friend-facing booking pages, shared editing or multi-user collaboration, messaging integrations, calendar OAuth, or a backend planner-data server/database. The Cloudflare Worker may host the frontend, manage sessions, and proxy GitHub sync, but GitHub remains the optional cloud data store.
 
 ## Product workflow
 
@@ -118,11 +122,11 @@ Use the GitHub App created for this planner. GitHub Pages uses GitHub App web au
 
 1. The user starts **Connect GitHub** in planner Settings, authorizes the app on GitHub and returns to the planner. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
 2. If the app is not installed on their personal account, the planner offers GitHub's installation page; the user returns to the planner and selects **Continue after installation**.
-3. The user token remains in memory only; it is cleared on reload/sign-out and the user reconnects in each browser session. Never put an app client secret or private key in frontend code or build variables.
+3. Direct GitHub mode keeps the user token in memory only; it is cleared on reload/sign-out. Connected mode uses an HttpOnly same-origin session cookie and stores encrypted tokens in a Worker Durable Object. Never put an app client secret, session encryption key, or private key in frontend code or build variables.
 4. Request **Contents: Read and write** and **Repository creation: Read and write** for automatic creation. Enable Device Flow, disable webhooks and configure the deployed planner URL as the homepage and exact callback URL. The site owner can deploy and configure the Worker through the Cloudflare browser dashboard as described in README.
 5. On successful sign-in, create or connect a private `meet-up-planner-data` repository and initialize `data/meetup-planner.json`. If creation is not permitted, instruct the user to create a private repository manually and grant the app access.
-6. Repository settings are owner, private repository name, branch (default `main`), and file path (default `data/meetup-planner.json`). Keep settings and the most recently synced blob SHA locally.
-7. Use GitHub Contents API reads and writes. Include the current blob SHA on updates; detect 409/conflict conditions and never silently overwrite. Before replacing a version, download a dated backup and let the user choose local or cloud data. Automatic record merging is not required.
+6. Repository settings are owner, private repository name, branch, and file path (default `data/meetup-planner.json`). Keep settings and sync state locally.
+7. Use GitHub Contents API reads and writes. Include the current blob SHA on updates; detect conflicts and never silently overwrite. Connected mode merges independent record changes against a trusted baseline; incompatible edits and deletions require a choice. Direct mode retains its explicit whole-copy conflict flow. Before replacing a version, download a dated backup.
 8. Save locally first, debounce automatic sync (approximately 2–5 seconds), provide manual **Sync now**, show clear saved/syncing/synced/offline/failure status, and retain local data for retries during outages.
 9. Handle missing repositories, incorrect branches/paths, expired/revoked tokens, and insufficient permissions with actionable messages.
 
@@ -164,7 +168,9 @@ Write and maintain tests for meet-up creation/update, conflict detection, travel
 
 Treat this checklist as a product-level audit, not a claim that each item has already been tested or fully implemented. Check the current application and tests before reporting an item complete.
 
-## Authentication fix handoff
+## Historical authentication fix handoff
+
+The following investigation and deployment instructions describe the earlier Pages-only setup. The owner has since reported successful sign-in; use the current README for Worker hosting and domain migration rather than the historical build settings below.
 
 **Latest investigation:** The `fetch_failed` log is consistent with the Worker setting `redirect: 'error'`, which Cloudflare Workers does not implement and rejects before sending the request. The Worker now uses `redirect: 'manual'` and rejects all non-2xx responses, including redirects, without forwarding credentials. Deploy this change to Cloudflare and restart sign-in with a fresh authorization code; a successful live exchange is still unverified. If `fetch_failed` persists after deployment, investigate outbound connectivity rather than assuming this was the only cause. See [Cloudflare's Request documentation](https://developers.cloudflare.com/workers/runtime-apis/request/).
 
@@ -195,13 +201,13 @@ Cloudflare's first build failed with **root directory not found** because the `w
    Update Worker configuration in Cloudflare and deploy it after any changes. The Worker URL is the endpoint, not the GitHub callback URL.
 5. Once the Worker is correctly configured, merging/pushing to the configured `main` branch triggers the GitHub Pages workflow and, if Cloudflare Workers Builds is connected to that branch, a Worker build/deployment. A Pages rerun only rebuilds the frontend; it does not change Worker runtime variables or secrets. Confirm both deployments, then test authorization, installation if prompted, private repository creation and JSON initialization, reconnection, device-code fallback, conflicts, and offline/reconnect behavior without losing local data. The complete live flow remains unverified.
 
-The GitHub installation page may require selecting an existing repository when choosing selected repositories. All-repository access is broader; GitHub controls this choice. Repository creation also depends on GitHub permissions, and a 404 can mean an existing repository is inaccessible. The Worker handles sign-in only; sync calls GitHub directly. The Worker Free plan has request limits, including device-flow polling, and its origin check alone does not prevent abuse.
+The GitHub installation page may require selecting an existing repository when choosing selected repositories. All-repository access is broader; GitHub controls this choice. Repository creation also depends on GitHub permissions, and a 404 can mean an existing repository is inaccessible. In direct mode the Worker handles sign-in and sync calls GitHub directly; connected mode also proxies sync. The Worker Free plan has request limits, including device-flow polling, and its origin check alone does not prevent abuse.
 
-Most recent local validation of the redirect fix: lint passed, all 28 tests passed, and the production build passed. The tests mock the upstream fetch; they do not prove the deployed Worker can exchange a real authorization code. Live Worker deployment and successful sign-in remain to be verified.
+Historical validation of the redirect fix: lint passed, all 28 tests passed, and the production build passed. The owner subsequently reported that live login and setup work. The new domain and connected-session flow still require separate live verification after deployment.
 
 ## Known GitHub sync behavior
 
-- Sign-in is session-only; reconnect after page reload.
-- Conflicts require an explicit choice between local and cloud data; planner records are not automatically merged.
+- Direct GitHub sign-in is session-only; connected mode uses a persistent Worker session.
+- Direct mode conflicts require an explicit choice between local and cloud data. Connected mode can merge independent record changes against a trusted local baseline, but conflicting edits still require a choice.
 - Automatic private repository creation depends on the GitHub App's granted permissions; manual creation of a private repository is the fallback.
 - Remote JSON is validated before use. Never weaken validation or replace the local snapshot with unvalidated data.

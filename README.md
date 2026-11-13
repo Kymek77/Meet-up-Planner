@@ -22,41 +22,44 @@ The installable PWA caches the application for offline use after its first succe
 
 In Settings, export a readable JSON backup or a text itinerary. Import validates the file before asking to replace local data. Back up your existing data before importing. GitHub credentials and repository settings are not included in exports.
 
+### Moving from GitHub Pages to meetup-planner.com
+
+The new domain has separate browser storage: existing planner data, repository settings and installed PWAs do not move automatically. Before changing the GitHub App callback or deploying the new site, export a JSON backup from every device with local changes. Keep the old site available until you have opened the new site, imported or reconciled the data and verified your planner. Do not clear the old browser storage as part of the migration.
+
+The Worker deployment serves the Vite build at the root and handles `/api/*` on the same origin. Worker static assets and API requests have different Cloudflare usage limits; session storage also has its own limits. The Worker does not store planner snapshots: GitHub remains the optional cloud data store.
+
 ## Optional GitHub sync
 
-### One-time deployment setup (browser only)
+### Worker deployment
 
-The site owner performs this setup once; individual planner users do not need a Cloudflare account. No local installation or terminal is required.
+The site owner needs an active Cloudflare zone, a Worker and a GitHub App. Individual planner users do not need a Cloudflare account. The target production origin is `https://meetup-planner.com`; the app and `/api/*` must share this exact HTTPS origin for connected sessions. Attach the Worker as a Cloudflare custom domain only after the new code and settings are ready.
 
-1. In GitHub → Settings → Developer settings → GitHub Apps, configure the existing **GitHub App** (or register one). Set its homepage and callback URL to the exact deployed planner URL, including the trailing slash, e.g. `https://YOUR-ACCOUNT.github.io/Meet-up-Planner/`. Enable **Device Flow**, turn webhooks off, and request **Contents: read and write** and **Repository creation: read and write**. Make the app public for other GitHub accounts. Approve changed permissions on any existing installation.
-2. Ensure these Worker files are merged into the GitHub branch you will deploy. Create a Cloudflare account on the **Workers Free** plan. In the Cloudflare dashboard, open **Workers & Pages → Create application → GitHub**, authorize Cloudflare's GitHub integration and select this repository. Name the Worker `meet-up-planner-auth` to match `worker/wrangler.toml`, choose the deployment branch, and set its **root directory** to `worker`. Leave the optional build command empty and use the default deploy command. Select **Save and Deploy**. Cloudflare runs the deployment; you do not need Wrangler on your computer. The Worker cannot sign users in until the next step is complete.
-3. In the deployed Worker's Cloudflare **Settings → Variables and Secrets**, add these runtime variables as text:
-   - `GITHUB_CLIENT_ID`: the GitHub App's client ID.
-   - `PLANNER_ORIGIN`: the planner origin only, e.g. `https://YOUR-ACCOUNT.github.io` (no path or trailing slash).
-   - `CALLBACK_URL`: the exact callback URL configured in step 1.
+1. In GitHub App settings, add `https://meetup-planner.com/` as an exact callback URL, retaining the existing Pages callback during migration. Enable Device Flow, disable webhooks, and request **Contents: read and write** and **Repository creation: read and write**. Approve changed permissions on existing installations. Repository creation permission is not needed if users create their own private repository.
+2. Connect the repository to Cloudflare Workers Builds. Set its root directory to the repository root, build command to `npm ci && npm run build`, and deploy command to `npx wrangler deploy --config worker/wrangler.toml`. Configure public build variables `VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`, `VITE_GITHUB_AUTH_URL=https://meetup-planner.com` and `VITE_BASE_PATH=/`. The Wrangler configuration deploys the built static assets and the SQLite-backed session Durable Object.
+3. Configure Worker runtime variables `GITHUB_CLIENT_ID`, `APP_ORIGIN=https://meetup-planner.com` and `CONNECTED_CALLBACK_URL=https://meetup-planner.com/`. Preserve the existing `PLANNER_ORIGIN` and `CALLBACK_URL` for the Pages site while migrating. Set `GITHUB_CLIENT_SECRET` and `SESSION_ENCRYPTION_KEY` as secrets; the latter must be 32 cryptographically random bytes encoded in base64. Never commit or share either secret. Changing the session encryption key invalidates existing sessions.
+4. Deploy the new code and attach the custom domain in **Workers & Pages → Worker → Settings → Domains & Routes → Add → Custom Domain**. Verify HTTPS, both sign-in modes and local data migration before retiring the old site. Cloudflare Builds settings and Worker runtime variables are separate.
 
-   Generate a client secret in the GitHub App settings, add it as a **Secret** named `GITHUB_CLIENT_SECRET`, and select **Deploy** to apply the changes. Never put this secret in Git, build variables, or logs. `keep_vars` in the Worker configuration preserves dashboard variables across deployments. Use a dedicated planner origin if possible: other pages on the same origin have the same browser access.
-4. Copy the Worker's `workers.dev` URL. In this repository's **Settings → Secrets and variables → Actions → Variables**, set `MEETUP_APP_CLIENT_ID` to the same client ID, `MEETUP_APP_SLUG` to the slug from `github.com/apps/<slug>`, and `MEETUP_AUTH_URL` to the Worker URL. These are public build values, not secrets. Redeploy Pages by running **Deploy Meet-up Planner** from the repository's Actions tab. Cloudflare automatically deploys the Worker when its configured branch changes. Local development can use a separate Worker and GitHub App with matching callback and `VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`, and `VITE_GITHUB_AUTH_URL` in ignored `.env.local`.
-
-The Worker handles authorization only and does not store planner data or tokens. Its origin check is a browser protection, not abuse prevention: public requests can still consume the free quota. Configure Cloudflare protections if needed.
+The Worker stores encrypted GitHub credentials for connected sessions, but not planner snapshots. Session cookies expire after 30 days; signing out deletes the server session. Users can also revoke access in GitHub settings. Origin checks are not abuse prevention: configure Cloudflare protections and monitor usage.
 
 ### Connect your planner
 
-1. In planner Settings choose **Connect GitHub** and authorize on GitHub. If the app is not installed on your personal account, the planner offers an installation link. Approve the installation, return to the planner, and choose **Continue after installation**.
+1. In planner Settings choose a sync mode, then **Connect GitHub** and authorize on GitHub. If the app is not installed on your personal account, use the offered installation link and return to finish setup.
 2. The planner connects an accessible existing private `meet-up-planner-data` repository, or attempts to create one automatically, then initializes `data/meetup-planner.json`. GitHub automatically grants an app access to repositories it creates. Installation with **All repositories** also grants access to your other repositories; with **Only select repositories**, GitHub may require an existing repository to be selected before installation. If an existing planner repository is not accessible or creation is denied, update the installation's repository selection or permissions in GitHub settings. The app never silently overwrites an existing conflicting planner.
 
 On an installed mobile app where GitHub opens in a separate browser and cannot return to the same session, choose **Use device code instead**. Open the GitHub activation link, enter the displayed code, then return to the planner while it waits for approval.
 
-The Worker is called during sign-in, including browser preflight requests and repeated polling when using the device-code fallback; **sync requests go directly from the browser to GitHub**, not through Cloudflare. GitHub's API rate limits still apply. The Workers Free plan has a daily request limit; if exhausted, new sign-ins fail until the limit resets, while local planning remains available. Check [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) and ensure your account remains on the free plan if you do not want usage-based charges.
+In direct mode, sign-in uses the Worker and sync requests go directly from the browser to GitHub. Connected mode uses the Worker for its session and sync requests; it checks for remote changes while the app is open and visible. Browser background restrictions mean this is not instantaneous or a background service. Cloudflare Worker and Durable Object limits and GitHub API limits apply. If a service or quota is unavailable, planner data remains local. Check [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) and monitor usage.
 
 If sign-in returns HTTP 502, check that the latest Worker is deployed and inspect its `GitHub authentication upstream failure` log. `fetch_failed` means the outbound request could not be completed; `non_2xx_response` includes the upstream status and GitHub request ID when available. The Worker rejects redirects rather than forwarding credentials to another endpoint. Do not share authorization codes, tokens, client secrets, or request bodies when troubleshooting.
 
-The GitHub App uses fine-grained app permissions instead of OAuth scopes. Its user access token stays in memory and is cleared on reload or sign-out, so sign in again in each new browser session. While signed in, changes save locally first and sync automatically after a short pause. Offline changes remain in IndexedDB and sync when the app is open and the connection returns; transient errors are retried. The sync status is shown in the app, and **Sync now** remains available. If another device changed the cloud copy, the app asks which version to keep rather than silently overwriting; it downloads a dated backup before replacing either copy. It does not merge planner records automatically.
+In direct mode the token stays in memory and is cleared on reload or sign-out. Local changes push automatically after a short pause while signed in; pull is manual, and conflicting snapshots require an explicit choice.
 
-## GitHub Pages
+Connected mode restores its server session after refresh, checks for changes automatically and merges independent record changes against the last synced baseline. Conflicting edits and deletions require a choice; backups are made before replacement. The baseline and pending local data remain in IndexedDB. Connected sync requires browser support for Web Locks and pauses rather than risk unsafe multi-tab writes if unavailable. Both modes keep local planning available offline.
+
+## GitHub Pages fallback
 
 In repository Settings → Pages, select **GitHub Actions** as the source. Push to `main` or run the deployment workflow manually. It installs dependencies, lints, tests, builds with the repository-specific base path, and deploys the output. For other hosting, set `VITE_BASE_PATH` to the deployment path at build time (default `/`).
 
 ## Data and privacy
 
-The planner stores friends, planning periods, time blocks and meet-ups in IndexedDB. Repository configuration and the most recently synced blob SHA are stored in localStorage. Data pushed to GitHub is a plain JSON file in your private repository and remains in its Git history. Do not use a public repository for personal data. Delete or revoke tokens in GitHub settings when no longer needed.
+The planner stores friends, planning periods, time blocks and meet-ups in IndexedDB. Connected sync also stores its baseline and local conflict backups there; repository configuration is stored in localStorage. Data pushed to GitHub is a plain JSON file in your private repository and remains in its Git history. Do not use a public repository for personal data. Delete or revoke tokens in GitHub settings when no longer needed.

@@ -2,3 +2,24 @@ name = "meet-up-planner-auth"
 main = "index.ts"
 compatibility_date = "2026-11-01"
 keep_vars = true
+
+# APP_ORIGIN is the exact HTTPS origin serving the app. CONNECTED_CALLBACK_URL
+# must be the registered GitHub callback URL on that origin. Keep PLANNER_ORIGIN
+# and CALLBACK_URL configured for the existing Pages deployment until cutover.
+# Optionally LEGACY_PLANNER_ORIGIN and LEGACY_CALLBACK_URL allow a second exact
+# legacy origin/callback pair. These values are Wrangler variables, not secrets.
+# Set SESSION_ENCRYPTION_KEY as a Wrangler secret: base64-encoded 32 random bytes.
+# Also configure the existing GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET secrets.
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api", "/api/*", "/exchange", "/device-code", "/device-token"]
+
+[[durable_objects.bindings]]
+name = "SESSION_STORE"
+class_name = "SessionStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionStore"]

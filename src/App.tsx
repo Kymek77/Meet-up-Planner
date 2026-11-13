@@ -6,6 +6,8 @@ import { usePlanner } from './store'
 import { CloudConflictError, ensurePrivateRepository, getAuthenticatedUser, GitHubAuthError, GitHubPermissionError, hasPersonalInstallation, readCloud, writeCloud } from './sync'
 import { beginGitHubAuthorization, exchangeGitHubCode, pollDeviceAuthorization, requestDeviceAuthorization, takeGitHubCallback, type DeviceAuthorization } from './auth'
 import Calendar from './Calendar'
+import ConnectedSync from './ConnectedSync'
+import { logoutConnected } from './connected'
 import './sync.css'
 
 type Page = 'overview' | 'friends' | 'availability' | 'calendar' | 'itinerary' | 'settings'
@@ -58,6 +60,7 @@ function App() {
   })
   const [periodId, setPeriodId] = useState('')
   const [dialog, setDialog] = useState<Dialog>(null)
+  const dialogBase = useRef<PlannerData | null>(null)
   const [formError, setFormError] = useState('')
   const [friendFilter, setFriendFilter] = useState('active')
   const [buffer, setBuffer] = useState(Number(localStorage.getItem('meetup-buffer') ?? 30))
@@ -72,8 +75,8 @@ function App() {
   const conflictCount = meetings.filter(m => meetingWarnings(m, data, buffer).length).length
   const dashboard = getDashboardHighlights(meetings, data.friends)
   const friend = (id: string) => data.friends.find(f => f.id === id)
-  const open = (next: Dialog) => { setFormError(''); setDialog(next) }
-  const persist = async (next: PlannerData) => { await save(next) }
+  const open = (next: Dialog) => { dialogBase.current = data; setFormError(''); setDialog(next) }
+  const persist = async (next: PlannerData, base = data) => { await save(next, base) }
   const remove = (kind: 'period' | 'friend' | 'availability' | 'meeting', id: string) => {
     if (!window.confirm(`Delete this ${kind}?${kind === 'friend' || kind === 'period' ? ' Related availability and plans will also be deleted.' : ''}`)) return
     const next = { ...data }
@@ -114,8 +117,10 @@ function App() {
         next.meetings = [...data.meetings.filter(x => x.id !== id), item]
       }
     }
-    await persist(next)
-    if (!usePlanner.getState().error) setDialog(null)
+    await persist(next, dialogBase.current ?? data)
+    const saveError = usePlanner.getState().error
+    if (saveError) setFormError(saveError)
+    else setDialog(null)
   }
   if (!ready) return <div className="loading">Opening Meet-up Planner…</div>
 
@@ -209,6 +214,41 @@ function downloadPlannerBackup(data: PlannerData, label: string) {
 }
 
 function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: { data: PlannerData; save: (data: PlannerData) => Promise<void>; buffer: number; setBuffer: (value: number) => void; online: boolean; onSyncStatus: (status: string) => void }) {
+  const [mode, setMode] = useState<'direct' | 'connected'>(() => localStorage.getItem('meetup-sync-mode') === 'connected' ? 'connected' : 'direct')
+  const [switching, setSwitching] = useState(false)
+  const [switchError, setSwitchError] = useState('')
+  const [directBusy, setDirectBusy] = useState(false)
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key === 'meetup-sync-mode') {
+        setMode(event.newValue === 'connected' ? 'connected' : 'direct')
+        onSyncStatus('Sync mode changed in another tab.')
+      }
+    }
+    window.addEventListener('storage', changed)
+    return () => window.removeEventListener('storage', changed)
+  }, [onSyncStatus])
+  const switchMode = async (next: 'direct' | 'connected') => {
+    if (next === mode || switching || directBusy) return
+    setSwitching(true); setSwitchError('')
+    try {
+      localStorage.setItem('meetup-sync-mode', next)
+      if (mode === 'connected') await logoutConnected()
+      setMode(next)
+      onSyncStatus('Sync paused · Your planner remains saved on this device.')
+    } catch (e) { localStorage.setItem('meetup-sync-mode', mode); setSwitchError(e instanceof Error ? e.message : 'Could not switch sync mode.') }
+    finally { setSwitching(false) }
+  }
+  return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
+    <section className="settings-card"><h2>Sync mode</h2><div className="form"><label>Choose how to connect<select value={mode} disabled={switching || directBusy} onChange={e => void switchMode(e.target.value as 'direct' | 'connected')}><option value="direct">Direct GitHub (current)</option><option value="connected">Connected Worker session</option></select></label>{switchError && <p className="form-error" role="alert">{switchError}</p>}</div></section>
+    {!switching && (mode === 'direct' ? <DirectSync data={data} save={save} online={online} onSyncStatus={onSyncStatus} onBusy={setDirectBusy} /> : <ConnectedSync data={data} online={online} onSyncStatus={onSyncStatus} backup={downloadPlannerBackup} />)}
+    <section className="settings-card"><h2>Planning preferences</h2><div className="form"><label>Buffer between plans (minutes)<input type="number" min="0" max="1440" value={buffer} onChange={e => { const n = Math.max(0, Math.min(1440, Number(e.target.value))); setBuffer(n); localStorage.setItem('meetup-buffer', String(n)) }} /></label></div></section>
+    <section className="settings-card"><h2>Backups</h2><p>Export a copy before importing or clearing data. Import replaces everything on this device.</p><div className="sync-actions"><Button secondary onClick={() => download(JSON.stringify(data, null, 2), 'meet-up-planner.json', 'application/json')}>Export JSON</Button><Button secondary onClick={() => download(itineraryText(data.meetings, data), 'meet-up-itinerary.txt', 'text/plain')}>Export confirmed itinerary</Button><label className="button secondary file-button">Import JSON<input type="file" accept=".json,application/json" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; void file.text().then(text => { const parsed: unknown = JSON.parse(text); if (!isPlannerData(parsed)) throw new Error('Invalid planner backup.'); if (window.confirm('Replace all local planner data with this backup?')) void save(parsed) }).catch(() => window.alert('This file is not a valid Meet-up Planner backup.')) }} /></label></div></section>
+    <section className="settings-card"><h2>Local data</h2><p>Planner data is stored in this browser's IndexedDB. Clearing browser data will remove it.</p><Button secondary onClick={() => { if (window.confirm('Delete all local Meet-up Planner data? This cannot be undone.')) void save(emptyData()) }}>Clear local data</Button></section>
+  </>
+}
+
+function DirectSync({ data, save, online, onSyncStatus, onBusy }: { data: PlannerData; save: (data: PlannerData) => Promise<void>; online: boolean; onSyncStatus: (status: string) => void; onBusy: (busy: boolean) => void }) {
   const [token, setToken] = useState('')
   const clientId = import.meta.env.VITE_GITHUB_APP_CLIENT_ID?.trim() ?? ''
   const appSlug = import.meta.env.VITE_GITHUB_APP_SLUG?.trim() ?? ''
@@ -226,6 +266,8 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
   const [message, setMessage] = useState('')
   const [conflict, setConflict] = useState<{ data: PlannerData; sha: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  useEffect(() => { onBusy(busy); return () => onBusy(false) }, [busy, onBusy])
+  useEffect(() => () => authController.current?.abort(), [])
   const syncedData = useRef('')
   const syncing = useRef(false)
   const retryDelay = useRef(5000)
@@ -503,8 +545,7 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
     timer = window.setTimeout(() => void attemptSync(), 2000)
     return () => window.clearTimeout(timer)
   }, [data, token, owner, repo, branch, path, online, conflict, target, shaKey, showLatestConflict, rememberTarget, onSyncStatus])
-  return <><div className="page-heading"><div><div className="eyebrow">YOUR SPACE, YOUR WAY</div><h1>Make it <em>yours.</em></h1><p>Your planner lives on this device, with optional cloud sync.</p></div></div>
-    <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Sign in with GitHub to connect your private planner repository. If needed, we’ll guide you through installing the GitHub App and creating the repository. Your access token stays in memory and is cleared when you reload or sign out.</p>
+  return <section className="settings-card"><div className="settings-icon"><Cloud size={22} /></div><h2>GitHub sync</h2><p>Sign in with GitHub to connect your private planner repository. If needed, we’ll guide you through installing the GitHub App and creating the repository. Your access token stays in memory and is cleared when you reload or sign out.</p>
       <div className="form">
         {(!clientId || !workerUrl || !appSlug) && <p className="form-error" role="alert">GitHub sign-in is not configured for this deployment. The site owner must configure the GitHub App and authentication service.</p>}
         {!token && !needsInstallation ? <div className="sync-actions"><button className="button" disabled={busy || !clientId || !workerUrl || !appSlug} onClick={() => void signIn()}>{authenticating ? 'Connecting to GitHub…' : 'Connect GitHub'}</button>{authenticating && <button className="button secondary" onClick={signOut}>Cancel sign in</button>}</div> : token && <div className="sync-actions"><p className="signed-in">Signed in as <strong>@{owner}</strong></p><button className="button secondary" onClick={() => void sync('push')} disabled={busy || !online || Boolean(conflict)}>Sync now</button><button className="button secondary" onClick={signOut}>Sign out</button></div>}
@@ -518,10 +559,6 @@ function SettingsPage({ data, save, buffer, setBuffer, online, onSyncStatus }: {
         {message && <p role="status" className="sync-message">{message}</p>}<p className="form-hint">Changes save locally immediately, then sync automatically after a short pause. Offline changes stay queued on this device and sync after reconnecting. Conflicts never overwrite data silently; replacing either copy downloads a dated backup first.</p>
       </div>
     </section>
-    <section className="settings-card"><h2>Planning preferences</h2><div className="form"><label>Buffer between plans (minutes)<input type="number" min="0" max="1440" value={buffer} onChange={e => { const n = Math.max(0, Math.min(1440, Number(e.target.value))); setBuffer(n); localStorage.setItem('meetup-buffer', String(n)) }} /></label></div></section>
-    <section className="settings-card"><h2>Backups</h2><p>Export a copy before importing or clearing data. Import replaces everything on this device.</p><div className="sync-actions"><Button secondary onClick={() => download(JSON.stringify(data, null, 2), 'meet-up-planner.json', 'application/json')}>Export JSON</Button><Button secondary onClick={() => download(itineraryText(data.meetings, data), 'meet-up-itinerary.txt', 'text/plain')}>Export confirmed itinerary</Button><label className="button secondary file-button">Import JSON<input type="file" accept=".json,application/json" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; void file.text().then(text => { const parsed: unknown = JSON.parse(text); if (!isPlannerData(parsed)) throw new Error('Invalid planner backup.'); if (window.confirm('Replace all local planner data with this backup?')) void save(parsed) }).catch(() => window.alert('This file is not a valid Meet-up Planner backup.')) }} /></label></div></section>
-    <section className="settings-card"><h2>Local data</h2><p>Planner data is stored in this browser's IndexedDB. Clearing browser data will remove it.</p><Button secondary onClick={() => { if (window.confirm('Delete all local Meet-up Planner data? This cannot be undone.')) void save(emptyData()) }}>Clear local data</Button></section>
-  </>
 }
 
 export default App
