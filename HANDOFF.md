@@ -8,6 +8,8 @@ Treat the product requirements below as the continuing baseline for all future w
 
 The owner has purchased `meetup-planner.com` through Cloudflare. Migration to same-origin Worker hosting and an optional persistent-session sync mode is being prepared; do not assume the new deployment is live. Keep the existing GitHub-only sync mode available without a subscription. Before the origin changes, export local planner data from each device and keep the old site available until the new site is verified. Browser storage does not move between origins.
 
+The owner confirmed the domain is active, added its GitHub App callback and saved the new Worker session variables and build configuration. The new Worker build and custom-domain attachment still require verification.
+
 ## Product purpose
 
 Build a complete, production-quality, mobile-first personal planner for organising multiple one-to-one meet-ups with friends during a fixed period, such as a festive trip. The app is for one user. Friends never sign in, fill in forms, or book slots; the user contacts them through WhatsApp, iMessage, in person, or other channels and enters their availability.
