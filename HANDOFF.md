@@ -10,6 +10,8 @@ The owner has purchased `meetup-planner.com` through Cloudflare. Migration to sa
 
 The owner confirmed the domain is active, added its GitHub App callback and saved the new Worker session variables and build configuration. The new Worker build and custom-domain attachment still require verification.
 
+The owner attached the domain, enabled GitHub Device Flow and installed the app on the private repository. Connected device-code sign-in and session restoration succeeded; a fresh build is needed after correcting Vite build variables. Web sign-in and cross-device reconciliation remain to be verified.
+
 ## Product purpose
 
 Build a complete, production-quality, mobile-first personal planner for organising multiple one-to-one meet-ups with friends during a fixed period, such as a festive trip. The app is for one user. Friends never sign in, fill in forms, or book slots; the user contacts them through WhatsApp, iMessage, in person, or other channels and enters their availability.
