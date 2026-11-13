@@ -114,7 +114,12 @@ export async function setupRepository(repo: string, slug: string) {
   }
   const path = repoPath(owner, repo)
   let result = await github(path)
-  if (result.status === 404) result = await github('/user/repos', 'POST', { name: repo, description: 'Private Meet-up Planner data', private: true, auto_init: true })
+  if (result.status === 404) {
+    result = await github('/user/repos', 'POST', { name: repo, description: 'Private Meet-up Planner data', private: true, auto_init: true })
+    if (result.status === 403 || result.status === 404 || result.status === 422) {
+      throw new Error(`Could not create or access the private data repository (${result.status}). If it exists, grant the GitHub App access to it. Otherwise, check Repository creation permission or create a private repository manually and select it in the app installation.`)
+    }
+  }
   assertSuccess(result)
   const repository = result.body as { private?: boolean; owner?: { login?: string }; default_branch?: string }
   if (!repository?.private || repository.owner?.login?.toLowerCase() !== owner.toLowerCase() || !repository.default_branch) throw new Error('The data repository must be private and owned by your signed-in account.')

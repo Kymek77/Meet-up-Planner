@@ -1,5 +1,14 @@
 const AUTH_KEY = 'meetup-github-auth'
 const INSTALL_KEY = 'meetup-github-install'
+const INSTALL_RETURNED_KEY = 'meetup-github-install-returned'
+
+export function resetInstallationAttempt() {
+  sessionStorage.removeItem(INSTALL_RETURNED_KEY)
+}
+
+export function shouldAutomaticallyInstall(installationReturnsHere: boolean) {
+  return installationReturnsHere && !sessionStorage.getItem(INSTALL_RETURNED_KEY)
+}
 
 function randomString() {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
@@ -28,6 +37,7 @@ export function takeGitHubInstallationCallback(url: URL) {
     typeof pending.created !== 'number' || pending.created > Date.now() || Date.now() - pending.created > 30 * 60 * 1000) {
     throw new Error('This connection attempt expired or could not be verified. Please try again on the same device and browser.')
   }
+  sessionStorage.setItem(INSTALL_RETURNED_KEY, 'yes')
   return true
 }
 

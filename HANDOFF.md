@@ -4,17 +4,25 @@
 
 Treat the product requirements below as the continuing baseline for all future work on Meet-up Planner. Preserve existing behavior while implementing them, and do not narrow the product to the most recent GitHub sync change. GitHub sign-in uses a GitHub App and a Cloudflare Worker for the web authorization token exchange.
 
-## Settings and connection flow: merge handoff
+## Latest connection-flow update
 
-The settings redesign and installation-first connection flow have not yet been deployed. The change includes `src/App.tsx`, `src/ConnectedSync.tsx`, `src/auth.ts`, `src/connected.ts`, their tests, `README.md` and this handoff.
+Connect GitHub now authorizes first in both modes, checks the authenticated personal installation, and starts installation only if needed. A validated return continues authorization; a failed installation is not automatically retried in a loop. The alternate-origin and device-code paths retain explicit installation recovery. Connection mode tradeoffs and repository access choices are explained within Save and sync. GitHub may require an existing selection for selected-repository installation; it also automatically grants access to repositories the app creates, so all-repository access is not universally required.
+
+Local validation passed: 88 tests, lint, production build and `git diff --check`. A local browser check confirmed the settings layout and that direct mode starts at GitHub authorization; external navigation was blocked, and the connected-mode browser check was interrupted.
+
+The real GitHub authorization and installation journey remains unverified. After merging, confirm Cloudflare deploys the merged revision and verify new and existing installations in both modes, including a different device, permissions, cancellation, device-code and Pages fallback. Preserve existing planner backups and do not treat local checks as proof of the live flow.
+
+## Previous settings and connection flow: merge handoff
+
+This historical handoff described the settings redesign and installation-first connection flow before the latest update above. Deployment status has not been independently verified.
 
 - Settings now describe saving, syncing, planning preferences and backups in plainer language; advanced connection options remain available. Existing direct and connected modes and their saved selections are retained.
-- On the configured production origin, new connections start at GitHub App installation and continue automatically to PKCE authorization after a validated same-browser return. Existing installations have a sign-in option under advanced settings. The Pages fallback and device-code flow retain separate installation recovery where needed.
+- The previous flow started at GitHub App installation and included a separate sign-in option for existing installations; the latest update supersedes it.
 - Replacing or deleting data asks for confirmation, then offers a backup download; cancelling the download prompt continues without downloading. Connected conflict resolution still keeps its on-device safety copy. A restore or deletion can sync to GitHub.
 
-The owner reports completing the README's GitHub App and Cloudflare configuration changes. This session could not independently verify those settings or reach the live domain. In particular, installation-first requires the App's setup URL and the public build variable `VITE_GITHUB_APP_SETUP_URL` to match `https://meetup-planner.com/`; see the README for the full configuration.
+The owner reports completing the README's GitHub App and Cloudflare configuration changes. This session could not independently verify those settings or reach the live domain. Automatic continuation after installation requires the App's setup URL and the public build variable `VITE_GITHUB_APP_SETUP_URL` to match `https://meetup-planner.com/`; see the README for the full configuration.
 
-Local validation passed: 87 tests, lint, production build and `git diff --check`. Browser checks covered the settings display, both backup-download choices, an invalid installation return and a 375px layout. The real GitHub installation/authorization journey has **not** been verified.
+Historical local validation passed: 87 tests, lint, production build and `git diff --check`. Browser checks covered the settings display, both backup-download choices, an invalid installation return and a 375px layout.
 
 After merging, confirm Cloudflare deploys the merged revision from the intended production branch. Then verify a new installation and an existing installation, both connection modes, repository creation or selection, denied permissions and cancellation, conflict/backups, offline recovery, the mobile device-code fallback and the Pages fallback. Use test data and preserve existing planner backups. Do not treat the configuration report or local tests as proof that the live flow works.
 
@@ -136,7 +144,7 @@ Show the current planning period, friend count, confirmed count, tentative/await
 
 Use the GitHub App created for this planner. GitHub Pages uses GitHub App web authorization with PKCE and a Cloudflare Worker for the token exchange:
 
-1. The user starts **Connect GitHub** in planner Settings. Where the configured GitHub setup URL matches this deployment, new users start with installation and automatically continue to authorization on return. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
+1. The user starts **Connect GitHub** in planner Settings. The planner authorizes first, verifies the personal installation and, when needed and the setup URL matches, starts installation and automatically continues authorization on return. The planner verifies state and sends the authorization code and PKCE verifier to the Worker. A device-code fallback supports installed apps that cannot return to the same browser session. Only the Worker holds the client secret.
 2. Sites whose URL differs from the GitHub App's single setup URL use authorization first and offer a separate installation link when needed. The installation ID in a redirect is untrusted; verify the installation belongs to the authenticated user. See README for the required GitHub App and build configuration.
 3. Direct GitHub mode keeps the user token in memory only; it is cleared on reload/sign-out. Connected mode uses an HttpOnly same-origin session cookie and stores encrypted tokens in a Worker Durable Object. Never put an app client secret, session encryption key, or private key in frontend code or build variables.
 4. Request **Contents: Read and write** and **Repository creation: Read and write** for automatic creation. Enable Device Flow, disable webhooks and configure the deployed planner URL as the homepage and exact callback URL. The site owner can deploy and configure the Worker through the Cloudflare browser dashboard as described in README.

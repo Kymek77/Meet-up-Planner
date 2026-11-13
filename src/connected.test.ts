@@ -94,6 +94,18 @@ describe('connected reconciliation', () => {
     await expect(setupRepository('planner', 'planner')).resolves.toEqual({ owner: 'alice', branch: 'main' })
   })
 
+  it('explains how to recover when repository creation or access is denied', async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      const { path } = JSON.parse(String(options.body)) as { path: string }
+      const result = path === '/user' ? { status: 200, body: { login: 'alice' } } :
+        path.startsWith('/user/installations') ? { status: 200, body: { installations: [{ account: { login: 'alice', type: 'User' }, app_slug: 'planner', suspended_at: null }] } } :
+          path === '/repos/alice/planner' ? { status: 404, body: {} } : { status: 403, body: {} }
+      return new Response(JSON.stringify(result), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetch)
+    await expect(setupRepository('planner', 'planner')).rejects.toThrow('create a private repository manually')
+  })
+
   it('rejects malformed session responses rather than treating them as successful', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('invalid', { status: 200 })))
     await expect(sessionRequest('/logout', {})).rejects.toThrow('Invalid response from connected service.')
